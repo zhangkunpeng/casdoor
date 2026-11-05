@@ -637,13 +637,19 @@ func GetWechatMiniProgramToken(application *Application, code string, host strin
 	}
 
 	openId, unionId := session.Openid, session.Unionid
-	if openId == "" && unionId == "" {
+	if openId == "" {
 		return nil, &TokenError{
 			Error:            InvalidRequest,
 			ErrorDescription: "the wechat mini program session is invalid",
 		}, nil
 	}
-	user, err := getUserByWechatId(application.Organization, openId, unionId)
+	release, err := LockWechatOrganization(application.Organization)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer release()
+	info := &idp.UserInfo{Id: idp.WechatSubject(provider.ClientId, openId, unionId), Extra: map[string]string{"wechat_unionid": unionId, idp.BuildWechatOpenIdKey(provider.ClientId): openId}}
+	user, err := FindWechatUser(application.Organization, info)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -660,7 +666,7 @@ func GetWechatMiniProgramToken(application *Application, code string, host strin
 		if CheckUsername(username, lang) == "" {
 			name = username
 		} else {
-			name = fmt.Sprintf("wechat-%s", openId)
+			name = util.GetRandomName()
 		}
 
 		// Generate a unique user ID within the confines of the application
@@ -676,7 +682,7 @@ func GetWechatMiniProgramToken(application *Application, code string, host strin
 			Name:              name,
 			Avatar:            avatar,
 			SignupApplication: application.Name,
-			WeChat:            openId,
+			WeChat:            info.Id,
 			Type:              "normal-user",
 			CreatedTime:       util.GetCurrentTime(),
 			IsAdmin:           false,
@@ -691,6 +697,14 @@ func GetWechatMiniProgramToken(application *Application, code string, host strin
 		if err != nil {
 			return nil, nil, err
 		}
+	}
+
+	organization, err := GetOrganizationByUser(user)
+	if err != nil {
+		return nil, nil, err
+	}
+	if _, err = SetUserOAuthProperties(organization, user, "WeChat", info, nil); err != nil {
+		return nil, nil, err
 	}
 
 	if tokenError := getInactiveUserTokenError(user); tokenError != nil {

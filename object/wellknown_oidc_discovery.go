@@ -37,6 +37,8 @@ type OidcDiscovery struct {
 	RegistrationEndpoint                       string   `json:"registration_endpoint,omitempty"`
 	JwksUri                                    string   `json:"jwks_uri"`
 	IntrospectionEndpoint                      string   `json:"introspection_endpoint"`
+	RevocationEndpoint                         string   `json:"revocation_endpoint"`
+	RevocationEndpointAuthMethodsSupported     []string `json:"revocation_endpoint_auth_methods_supported"`
 	ResponseTypesSupported                     []string `json:"response_types_supported"`
 	ResponseModesSupported                     []string `json:"response_modes_supported"`
 	GrantTypesSupported                        []string `json:"grant_types_supported"`
@@ -172,6 +174,8 @@ func GetOidcDiscovery(host string, applicationName string) OidcDiscovery {
 		RegistrationEndpoint:                       registrationEndpoint,
 		JwksUri:                                    jwksUri,
 		IntrospectionEndpoint:                      fmt.Sprintf("%s/api/login/oauth/introspect", originBackend),
+		RevocationEndpoint:                         fmt.Sprintf("%s/api/login/oauth/revoke", originBackend),
+		RevocationEndpointAuthMethodsSupported:     []string{"client_secret_basic", "client_secret_post", "private_key_jwt"},
 		ResponseTypesSupported:                     []string{"code", "token", "id_token", "code token", "code id_token", "token id_token", "code token id_token"},
 		ResponseModesSupported:                     []string{"query", "fragment", "form_post"},
 		GrantTypesSupported:                        []string{"authorization_code", "implicit", "password", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:device_code", "urn:ietf:params:oauth:grant-type:token-exchange", VerificationCodeGrantType},

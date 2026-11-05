@@ -550,7 +550,10 @@ func RefreshToken(application *Application, grantType string, refreshToken strin
 
 	// check whether the refresh token is valid, and has not expired.
 	token, err := GetTokenByRefreshToken(refreshToken)
-	if err != nil || token == nil {
+	if err != nil {
+		return nil, fmt.Errorf("find refresh token: %w", err)
+	}
+	if token == nil {
 		return &TokenError{
 			Error:            InvalidGrant,
 			ErrorDescription: "refresh token is invalid or revoked",
@@ -701,27 +704,19 @@ func RefreshToken(application *Application, grantType string, refreshToken strin
 		// the refreshed token stays bound to the login session that minted the original one
 		SessionId: token.SessionId,
 	}
-	_, err = AddToken(newToken)
-	if err != nil {
-		return nil, err
-	}
-
-	// Apply DPoP binding to the refreshed token if a DPoP proof was provided.
 	if dpopJkt != "" {
 		newToken.TokenType = "DPoP"
 		newToken.DPoPJkt = dpopJkt
-		if err = updateTokenDPoP(newToken); err != nil {
-			return nil, err
-		}
 	}
-
-	// the access token of the earlier refresh may still be in use by another sharer of the
-	// refresh token, it expires on its own
-	if !application.DisableRefreshRotation {
-		_, err = DeleteToken(token)
-		if err != nil {
-			return nil, err
-		}
+	persisted, err := persistRefreshedToken(token, newToken, !application.DisableRefreshRotation)
+	if err != nil {
+		return nil, err
+	}
+	if !persisted {
+		return &TokenError{
+			Error:            InvalidGrant,
+			ErrorDescription: "refresh token is already used or revoked",
+		}, nil
 	}
 
 	tokenWrapper := &TokenWrapper{

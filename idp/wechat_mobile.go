@@ -152,7 +152,7 @@ func (idp *WeChatMobileIdProvider) GetUserInfo(token *oauth2.Token) (*UserInfo, 
 
 	id := wechatUserInfo.Unionid
 	if id == "" {
-		id = wechatUserInfo.Openid
+		id = WechatSubject(idp.Config.ClientID, wechatUserInfo.Openid, "")
 	}
 
 	extra := make(map[string]string)

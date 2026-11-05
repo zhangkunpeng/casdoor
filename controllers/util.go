@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
 	"github.com/casdoor/casdoor/conf"
@@ -116,13 +117,16 @@ func (c *ApiController) GetAcceptLanguage() string {
 
 // SetTokenErrorHttpStatus ...
 func (c *ApiController) SetTokenErrorHttpStatus() {
-	_, ok := c.Data["json"].(*object.TokenError)
+	tokenError, ok := c.Data["json"].(*object.TokenError)
 	if ok {
-		if c.Data["json"].(*object.TokenError).Error == object.InvalidClient {
-			c.Ctx.Output.SetStatus(401)
+		switch tokenError.Error {
+		case object.InvalidClient:
+			c.Ctx.Output.SetStatus(http.StatusUnauthorized)
 			c.Ctx.Output.Header("WWW-Authenticate", "Basic realm=\"OAuth2\"")
-		} else {
-			c.Ctx.Output.SetStatus(400)
+		case object.EndpointError:
+			c.Ctx.Output.SetStatus(http.StatusServiceUnavailable)
+		default:
+			c.Ctx.Output.SetStatus(http.StatusBadRequest)
 		}
 	}
 	_, ok = c.Data["json"].(*object.TokenWrapper)

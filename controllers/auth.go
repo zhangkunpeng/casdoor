@@ -732,6 +732,9 @@ func linkUserByProvider(user *object.User, provider *object.Provider, providerId
 	if object.IsFlexibleCustomProvider(provider.Type) {
 		return object.LinkFlexibleCustomAccount(user, provider.Name, providerId)
 	}
+	if provider.Type == "WeChat" {
+		providerId = user.WeChat
+	}
 	return object.LinkUserAccount(user, provider.Type, providerId)
 }
 
@@ -1139,6 +1142,15 @@ func (c *ApiController) Login() {
 			}
 		}
 
+		if provider.Type == "WeChat" {
+			release, lockErr := object.LockWechatOrganization(application.Organization)
+			if lockErr != nil {
+				c.ResponseError(lockErr.Error())
+				return
+			}
+			defer release()
+		}
+
 		if authForm.Method == "signup" || authForm.Method == "signin" {
 			user := &object.User{}
 			if provider.Category == "SAML" && !object.IsFlexibleCustomProvider(provider.Type) {
@@ -1149,7 +1161,11 @@ func (c *ApiController) Login() {
 					return
 				}
 			} else if provider.Category == "OAuth" || object.IsFlexibleCustomProvider(provider.Type) {
-				user, err = getUserByProvider(application.Organization, provider, userInfo.Id)
+				if provider.Type == "WeChat" {
+					user, err = object.FindWechatUser(application.Organization, userInfo)
+				} else {
+					user, err = getUserByProvider(application.Organization, provider, userInfo.Id)
+				}
 				if err != nil {
 					c.ResponseError(err.Error())
 					return
@@ -1311,6 +1327,9 @@ func (c *ApiController) Login() {
 						user.Tag = application.DefaultTag
 					}
 
+					if provider.Type == "WeChat" {
+						user.WeChat = userInfo.Id
+					}
 					var affected bool
 					affected, err = object.AddUser(user, c.GetAcceptLanguage())
 					if err != nil {
@@ -1662,7 +1681,7 @@ func (c *ApiController) HandleOfficialAccountEvent() {
 		return
 	}
 
-	providerId := data.EventKey
+	providerId := strings.TrimPrefix(data.EventKey, "qrscene_")
 	provider, err := object.GetProvider(providerId)
 	if err != nil {
 		c.ResponseError(err.Error())
@@ -1678,13 +1697,21 @@ func (c *ApiController) HandleOfficialAccountEvent() {
 		return
 	}
 
+	identity, err := idp.ResolveWechatOfficialAccountIdentity(&http.Client{Timeout: 10 * time.Second}, provider.ClientId2, provider.ClientSecret2, data.FromUserName)
+	if err != nil {
+		c.ResponseError(err.Error())
+		return
+	}
+
 	idp.Lock.Lock()
 	if idp.WechatCacheMap == nil {
 		idp.WechatCacheMap = make(map[string]idp.WechatCacheMapValue)
 	}
 	idp.WechatCacheMap[data.Ticket] = idp.WechatCacheMapValue{
 		IsScanned:     true,
-		WechatUnionId: data.FromUserName,
+		WechatUnionId: identity.Unionid,
+		WechatOpenId:  identity.Openid,
+		AppId:         provider.ClientId2,
 		ProviderName:  provider.Name,
 	}
 	idp.Lock.Unlock()
