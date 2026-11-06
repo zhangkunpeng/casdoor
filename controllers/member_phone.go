@@ -55,21 +55,6 @@ func (c *ApiController) MemberPhone() {
 	c.ServeJSON()
 }
 
-func (c *ApiController) MemberWechatCredential() {
-	application := c.memberApplication("wechat:credential")
-	if application == nil {
-		return
-	}
-	credential, err := object.GetMemberWechatCredential(application, c.Ctx.Input.Query("app_id"))
-	if err != nil {
-		c.memberOperationError(err)
-		return
-	}
-	c.Ctx.Output.Header("Cache-Control", "no-store")
-	c.Data["json"] = map[string]any{"access_token": credential.AccessToken, "expires_at": credential.ExpiresAt}
-	c.ServeJSON()
-}
-
 func (c *ApiController) memberOperationError(err error) {
 	switch {
 	case errors.Is(err, object.ErrMemberUnauthenticated):

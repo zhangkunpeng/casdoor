@@ -27,7 +27,7 @@ Device 只消费 Xueda 提供的通用取图 URL，不持有 Casdoor 凭据，�
 
 ## 扩展边界
 
-基线为官方 `v4.26.0`。仅新增 `member-phone` 和 `member-wechat-credential`，分别提供登录后可重试的手机号绑定、Casdoor 统一托管的微信上游凭据。权限复用原生 `Application.Scopes`，名称分别为 `phone:write`、`wechat:credential`；扩展入口只接受明确配置的精确名称，空列表与通配符不授权。
+基线为官方 `v4.26.0`。仅新增 `member-phone`，提供登录后可重试的手机号绑定；微信上游凭据只由 Casdoor 原生小程序 IdP 在进程内使用，不对外提供、不持久化。权限复用原生 `Application.Scopes`，名称为 `phone:write`；扩展入口只接受明确配置的精确名称，空列表与通配符不授权。
 
 OpenID 使用原生 `get-user?owner=<组织>&userId=<主体>` 返回的 `properties.oauth_WeChat_extra` JSON 字符串，按固定 AppID 解析 `wechat_openid_<AppID>`；不使用通用微信 ID 或其他应用的值。微信登录沿用原生属性合并与持久化，回归验证多 AppID 保留、本人修改拒绝与字段过滤。组织的 Properties 必须只允许管理员修改，且服务端查询身份有权查看；属性被过滤时不得回退其他来源。
 

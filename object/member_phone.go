@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/casdoor/casdoor/idp"
 )
 
 type MemberPhoneOperation struct {
@@ -24,6 +26,19 @@ func memberOperationKey(parts ...string) string {
 	body, _ := json.Marshal(parts)
 	hash := sha256.Sum256(body)
 	return hex.EncodeToString(hash[:])
+}
+
+func memberWechatProvider(application *Application, appID string) (*Provider, error) {
+	for _, item := range application.Providers {
+		provider, err := GetProvider("admin/" + item.Name)
+		if err != nil {
+			return nil, fmt.Errorf("read member WeChat provider: %w", err)
+		}
+		if provider != nil && provider.Type == "WeChatMiniProgram" && provider.ClientId == appID {
+			return provider, nil
+		}
+	}
+	return nil, ErrMemberAppDenied
 }
 
 func BindMemberPhone(application *Application, user *User, appID, operationID, code string) error {
@@ -57,7 +72,7 @@ func BindMemberPhone(application *Application, user *User, appID, operationID, c
 	}
 	if !exists {
 		client := &http.Client{Timeout: 10 * time.Second}
-		credential, err := getWechatCredential(client, provider)
+		credential, err := idp.FetchWechatAppCredential(client, provider.ClientId, provider.ClientSecret)
 		if err != nil {
 			return err
 		}

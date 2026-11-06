@@ -49,7 +49,7 @@ func TestWechatMemberScopes(t *testing.T) {
 		{"missing-application", nil, false},
 		{"unconfigured-scopes", &object.Application{}, false},
 		{"empty-scopes", &object.Application{Scopes: []*object.ScopeItem{}}, false},
-		{"unrelated-scope", &object.Application{Scopes: []*object.ScopeItem{{Name: "wechat:credential"}}}, false},
+		{"unrelated-scope", &object.Application{Scopes: []*object.ScopeItem{{Name: "profile:write"}}}, false},
 		{"wildcard-scope", &object.Application{Scopes: []*object.ScopeItem{{Name: "phone:.*"}}}, false},
 		{"nil-scope-item", &object.Application{Scopes: []*object.ScopeItem{nil}}, false},
 		{"explicit-native-scope", &object.Application{Scopes: []*object.ScopeItem{nil, {Name: "phone:write"}}}, true},

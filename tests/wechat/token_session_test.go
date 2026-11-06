@@ -138,7 +138,7 @@ func TestWechatRefreshSession(t *testing.T) {
 		app := createProbeApplication(t, owner, "mini", "process-rotation-mini")
 		original := miniToken(t, app, "new-test-code")
 		successes, rejected := 0, 0
-		for _, result := range runProbeProcesses(t, app, original.RefreshToken, "") {
+		for _, result := range runProbeProcesses(t, app, original.RefreshToken) {
 			if result.RefreshRejected {
 				rejected++
 			} else {

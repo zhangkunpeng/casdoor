@@ -191,7 +191,7 @@ type processResult struct {
 	RefreshRejected bool
 }
 
-func runProbeProcesses(t *testing.T, app *object.Application, refreshToken, credentialAppID string) []processResult {
+func runProbeProcesses(t *testing.T, app *object.Application, refreshToken string) []processResult {
 	t.Helper()
 	resultDir := t.TempDir()
 	ready := filepath.Join(resultDir, "start")
@@ -213,7 +213,7 @@ func runProbeProcesses(t *testing.T, app *object.Application, refreshToken, cred
 			cmd.Env = append(os.Environ(), "XUEDA_PROBE_APP="+app.GetId(),
 				"XUEDA_PROBE_BARRIER="+ready, "XUEDA_PROBE_RESULT="+filepath.Join(resultDir, fmt.Sprint(index)),
 				"XUEDA_PROBE_READY="+filepath.Join(resultDir, fmt.Sprintf("ready-%d", index)),
-				"XUEDA_PROBE_REFRESH_PATH="+refreshPath, "XUEDA_PROBE_WECHAT_APPID="+credentialAppID)
+				"XUEDA_PROBE_REFRESH_PATH="+refreshPath)
 			if output, err := cmd.CombinedOutput(); err != nil {
 				for _, line := range strings.Split(string(output), "\n") {
 					if strings.Contains(line, "capabilities_test.go:") || strings.HasPrefix(line, "panic:") {
@@ -264,7 +264,7 @@ func TestWechatIndependentProcesses(t *testing.T) {
 	initializeProbe(t, true)
 	owner := fmt.Sprintf("wx-process-%d", time.Now().UnixNano())
 	app := createProbeApplication(t, owner, "mini", "process-mini")
-	results := runProbeProcesses(t, app, "", "")
+	results := runProbeProcesses(t, app, "")
 	first := verifiedSubject(t, app, results[0].AccessToken)
 	second := verifiedSubject(t, app, results[1].AccessToken)
 	users, links := probeAccountCounts(t, owner)
@@ -298,13 +298,7 @@ func TestWechatProcessHelper(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	var result processResult
-	if credentialAppID := os.Getenv("XUEDA_PROBE_WECHAT_APPID"); credentialAppID != "" {
-		credential, err := object.GetMemberWechatCredential(app, credentialAppID)
-		if err != nil {
-			t.Fatal("independent WeChat credential request failed")
-		}
-		result.AccessToken = credential.AccessToken
-	} else if refreshPath := os.Getenv("XUEDA_PROBE_REFRESH_PATH"); refreshPath != "" {
+	if refreshPath := os.Getenv("XUEDA_PROBE_REFRESH_PATH"); refreshPath != "" {
 		raw, err := os.ReadFile(refreshPath)
 		if err != nil {
 			t.Fatal("protected refresh input unavailable")
