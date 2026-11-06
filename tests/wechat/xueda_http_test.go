@@ -52,10 +52,10 @@ func (r scopedWechatTransport) RoundTrip(request *http.Request) (*http.Response,
 }
 
 type xuedaHTTPFixture struct {
-	Endpoint, Issuer, Organization, Application, ClientID, ClientSecret, AppID         string
-	Subject, AccessToken, IDToken, OtherClientID, OtherSecret, OtherAccessToken        string
-	Phase, FreshAccessToken, FreshRefreshToken                                         string
-	AdminApplication, AdminClientID, AdminClientSecret, AdminAccessToken, AdminSubject string
+	Endpoint, Issuer, Organization, Application, ClientID, ClientSecret, AppID          string
+	Subject, OpenID, AccessToken, IDToken, OtherClientID, OtherSecret, OtherAccessToken string
+	Phase, FreshAccessToken, FreshRefreshToken                                          string
+	AdminApplication, AdminClientID, AdminClientSecret, AdminAccessToken, AdminSubject  string
 }
 
 func TestXuedaMemberHTTPInterop(t *testing.T) {
@@ -95,7 +95,6 @@ func TestXuedaMemberHTTPInterop(t *testing.T) {
 	web.Router("/api/login/oauth/refresh_token", &controllers.ApiController{}, "POST:RefreshToken")
 	web.Router("/api/login/oauth/revoke", &controllers.ApiController{}, "POST:RevokeToken")
 	web.Router("/api/login/oauth/introspect", &controllers.ApiController{}, "POST:IntrospectToken")
-	web.Router("/api/login/oauth/member-identity", &controllers.ApiController{}, "POST:MemberIdentity")
 	web.Router("/api/login/oauth/member-phone", &controllers.ApiController{}, "POST:MemberPhone")
 	web.Router("/.well-known/:application/openid-configuration", &controllers.RootController{}, "GET:GetOidcDiscoveryByApplication")
 	web.Router("/.well-known/:application/jwks", &controllers.RootController{}, "GET:GetJwksByApplication")
@@ -107,7 +106,7 @@ func TestXuedaMemberHTTPInterop(t *testing.T) {
 	}
 	t.Cleanup(func() { object.DeleteProvider(storageProvider) })
 	app.Providers = append(app.Providers, &object.ProviderItem{Name: storageProvider.Name, Provider: storageProvider})
-	app.Scopes = []*object.ScopeItem{{Name: "wechat:read"}, {Name: "phone:write"}}
+	app.Scopes = []*object.ScopeItem{{Name: "phone:write"}}
 	if _, err := object.UpdateApplication(app.GetId(), app, true, "en", nil); err != nil {
 		t.Fatal("interop application scopes update failed")
 	}
@@ -146,7 +145,7 @@ func TestXuedaMemberHTTPInterop(t *testing.T) {
 	}
 	fixture := xuedaHTTPFixture{Endpoint: server.URL, Issuer: "https://casdoor.xueda.me", Organization: app.Organization,
 		Application: app.Name, ClientID: app.ClientId, ClientSecret: app.ClientSecret, AppID: name + "-wx",
-		Subject: subject, AccessToken: token.AccessToken, IDToken: token.IdToken,
+		Subject: subject, OpenID: "mini-open-" + name, AccessToken: token.AccessToken, IDToken: token.IdToken,
 		OtherClientID: other.ClientId, OtherSecret: other.ClientSecret, OtherAccessToken: otherToken.AccessToken,
 		AdminApplication: adminApp.Name, AdminClientID: adminApp.ClientId, AdminClientSecret: adminApp.ClientSecret,
 		AdminAccessToken: adminToken.AccessToken}

@@ -16,6 +16,17 @@ var (
 	ErrMemberInvalid         = errors.New("invalid member operation")
 )
 
+func MemberScopeAllowed(application *Application, scope string) bool {
+	if application != nil {
+		for _, item := range application.Scopes {
+			if item != nil && item.Name == scope {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func GetActiveMember(application *Application, raw string) (*User, error) {
 	record, err := GetTokenByAccessToken(raw)
 	if err != nil {

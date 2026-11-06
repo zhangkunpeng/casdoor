@@ -321,7 +321,16 @@ func (c *ApiController) UpdateUser() {
 	}
 
 	if columnsStr != "" {
-		mergedUser := *oldUser
+		current, err := json.Marshal(oldUser)
+		if err != nil {
+			c.ResponseError(err.Error())
+			return
+		}
+		var mergedUser object.User
+		if err = json.Unmarshal(current, &mergedUser); err != nil {
+			c.ResponseError(err.Error())
+			return
+		}
 		if err = json.Unmarshal(c.Ctx.Input.RequestBody, &mergedUser); err != nil {
 			c.ResponseError(err.Error())
 			return

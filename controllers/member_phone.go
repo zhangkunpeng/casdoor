@@ -7,6 +7,13 @@ import (
 	"github.com/casdoor/casdoor/object"
 )
 
+func (c *ApiController) memberError(status int, code string) {
+	c.Ctx.Output.SetStatus(status)
+	c.Ctx.Output.Header("Cache-Control", "no-store")
+	c.Data["json"] = map[string]string{"error": code}
+	c.ServeJSON()
+}
+
 func (c *ApiController) memberApplication(scope string) *object.Application {
 	ok, application, _, _, err := c.ValidateOAuth(false)
 	if err != nil || !ok {
