@@ -14,20 +14,22 @@
 
 package object
 
-import "fmt"
+import (
+	"fmt"
 
-func getDbSyncerForUser(user *User) (*Syncer, error) {
-	syncers, err := GetSyncers("admin")
+	"github.com/xorm-io/xorm"
+)
+
+func getDbSyncerForUser(session *xorm.Session, user *User) (*Syncer, error) {
+	syncer := &Syncer{Owner: "admin", Organization: user.Owner, IsEnabled: true, Type: "Database"}
+	found, err := session.Desc("created_time").Get(syncer)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, syncer := range syncers {
-		if syncer.Organization == user.Owner && syncer.IsEnabled && syncer.Type == "Database" {
-			return syncer, nil
-		}
+	if !found {
+		return nil, nil
 	}
-	return nil, nil
+	return syncer, nil
 }
 
 func getEnabledSyncerForOrganization(organization string) (*Syncer, error) {

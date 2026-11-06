@@ -16,6 +16,7 @@ import (
 	"github.com/beego/beego/v2/server/web"
 	"github.com/casdoor/casdoor/controllers"
 	"github.com/casdoor/casdoor/object"
+	"github.com/casdoor/casdoor/util"
 )
 
 type phoneTransport struct {
@@ -79,6 +80,36 @@ func TestWechatMemberPhone(t *testing.T) {
 	}
 	session := miniToken(t, app, "new-test-code")
 	subject := verifiedSubject(t, app, session.AccessToken)
+	db := probeDatabase(t)
+	syncer := &object.Syncer{Owner: "admin", Name: app.Name, Organization: app.Organization,
+		Type: "Database", TableColumns: []*object.TableColumn{
+			{Name: "phone", CasdoorName: "Phone", IsHashed: true},
+			{Name: "country", CasdoorName: "CountryCode", IsHashed: true},
+		}}
+	if _, err := object.AddSyncer(syncer); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { object.DeleteSyncer(syncer) })
+	// Enable only the persisted hash configuration; this test never starts an external synchronization job.
+	if _, err := db.Exec("UPDATE syncer SET is_enabled = true WHERE owner = ? AND name = ?", syncer.Owner, syncer.Name); err != nil {
+		t.Fatal(err)
+	}
+	before, err := object.GetUserByUserId(app.Organization, subject)
+	if err != nil || before == nil {
+		t.Fatal("phone account unavailable")
+	}
+	if err := before.UpdateUserHash(); err != nil {
+		t.Fatal(err)
+	}
+	before.PreHash = before.Hash
+	if _, err := object.UpdateUser(before.GetId(), before, []string{"pre_hash"}, true); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	if _, err := db.Exec("UPDATE `user` SET updated_time = ? WHERE owner = ? AND name = ?", oldTime, before.Owner, before.Name); err != nil {
+		t.Fatal(err)
+	}
+	restorePool := limitBusinessPool(t, 1)
 	server := httptest.NewServer(web.BeeApp.Handlers)
 	defer server.Close()
 	values := url.Values{"access_token": {session.AccessToken}, "app_id": {"phone-mini"},
@@ -90,6 +121,15 @@ func TestWechatMemberPhone(t *testing.T) {
 	if err != nil || user == nil || user.Phone != "13800000000" || user.CountryCode != "CN" {
 		t.Fatal("trusted phone not persisted on the authenticated Casdoor subject")
 	}
+	expected := *user
+	if err := expected.UpdateUserHash(); err != nil {
+		t.Fatal(err)
+	}
+	if user.Hash != expected.Hash || user.Hash == user.PreHash || user.UpdatedTime == oldTime ||
+		util.String2Time(user.UpdatedTime).Before(util.String2Time(oldTime)) {
+		t.Error("phone update did not maintain native hash and modification time")
+	}
+	persistedHash, persistedTime := user.Hash, user.UpdatedTime
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusServiceUnavailable {
 		t.Fatal("consumed authorization code was treated as a recoverable operation")
 	}
@@ -99,7 +139,6 @@ func TestWechatMemberPhone(t *testing.T) {
 	}
 	values.Set("access_token", session.AccessToken)
 	values.Set("code", "retryable-phone-code")
-	db := probeDatabase(t)
 	if _, err := db.Exec("CREATE TRIGGER xueda_phone_failure BEFORE UPDATE ON `user` FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected phone write failure'"); err != nil {
 		t.Fatal("phone failure trigger creation failed")
 	}
@@ -108,7 +147,7 @@ func TestWechatMemberPhone(t *testing.T) {
 		t.Fatal("phone persistence failure reported success")
 	}
 	user, err = object.GetUserByUserId(app.Organization, subject)
-	if err != nil || user == nil || user.Phone != "13800000000" {
+	if err != nil || user == nil || user.Phone != "13800000000" || user.Hash != persistedHash || user.UpdatedTime != persistedTime {
 		t.Fatal("failed phone transaction changed the current profile")
 	}
 	if _, err := db.Exec("DROP TRIGGER xueda_phone_failure"); err != nil {
@@ -125,6 +164,13 @@ func TestWechatMemberPhone(t *testing.T) {
 	if err != nil || user == nil || user.Phone != "13800111111" || user.CountryCode != "CN" {
 		t.Fatal("freshly authorized phone not persisted")
 	}
+	expected = *user
+	if err := expected.UpdateUserHash(); err != nil {
+		t.Fatal(err)
+	}
+	if user.Hash != expected.Hash || user.Hash == persistedHash || user.PreHash != before.PreHash {
+		t.Error("fresh authorization did not persist the native synchronization hash")
+	}
 	if calls.Load() != 5 {
 		t.Fatal("phone authorization requests did not follow native one-use verification")
 	}
@@ -139,4 +185,5 @@ func TestWechatMemberPhone(t *testing.T) {
 	if users != 1 {
 		t.Fatal("phone binding created a second account")
 	}
+	restorePool()
 }

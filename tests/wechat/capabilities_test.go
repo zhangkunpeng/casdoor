@@ -173,6 +173,125 @@ func probeDatabase(t *testing.T) *sql.DB {
 	return db
 }
 
+func limitBusinessPool(t *testing.T, limit int) func() {
+	t.Helper()
+	db := probeDatabase(t)
+	if _, err := db.Exec("INSERT IGNORE INTO setting (owner, name) VALUES ('admin', 'setting-built-in')"); err != nil {
+		t.Fatal(err)
+	}
+	setting, err := object.GetSetting()
+	if err != nil || setting == nil {
+		t.Fatal("native pool setting unavailable")
+	}
+	previous := *setting
+	setting.DbMaxOpenConns, setting.DbMaxIdleConns = limit, limit
+	if _, err := object.UpdateSetting(setting); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	restore := func() {
+		once.Do(func() {
+			if _, err := object.UpdateSetting(&previous); err != nil {
+				t.Error("native pool setting restore failed")
+			}
+		})
+	}
+	t.Cleanup(restore)
+	return restore
+}
+
+func TestWechatLockLeavesBusinessPoolAvailable(t *testing.T) {
+	initializeProbe(t, true)
+	for _, limit := range []int{1, 2} {
+		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+			owner := fmt.Sprintf("wx-pool-%d", time.Now().UnixNano())
+			restore := limitBusinessPool(t, limit)
+			release, err := object.LockWechatOrganization(owner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer release()
+			type lockResult struct {
+				release func()
+				err     error
+			}
+			waiter := make(chan lockResult, 1)
+			if limit == 2 {
+				go func() {
+					next, err := object.LockWechatOrganization(owner)
+					waiter <- lockResult{next, err}
+				}()
+				db := probeDatabase(t)
+				deadline := time.NewTimer(2 * time.Second)
+				defer deadline.Stop()
+				ticker := time.NewTicker(5 * time.Millisecond)
+				defer ticker.Stop()
+			waiting:
+				for {
+					var waiting int
+					if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.processlist WHERE state = 'User lock'").Scan(&waiting); err != nil {
+						t.Fatal(err)
+					}
+					if waiting > 0 {
+						break
+					}
+					select {
+					case <-deadline.C:
+						t.Fatal("second registration did not wait for the organization lock")
+					case <-ticker.C:
+						continue waiting
+					}
+				}
+			}
+			result := make(chan error, 1)
+			go func() {
+				_, err := object.GetUserCount(owner, "", "", "")
+				result <- err
+			}()
+			blocked := false
+			select {
+			case err := <-result:
+				if err != nil {
+					t.Error(err)
+				}
+			case <-time.After(750 * time.Millisecond):
+				blocked = true
+			}
+			select {
+			case next := <-waiter:
+				if next.release != nil {
+					next.release()
+				}
+				t.Error("same-organization waiter acquired a held lock")
+			default:
+			}
+			release()
+			release()
+			if limit == 2 {
+				select {
+				case next := <-waiter:
+					if next.err != nil {
+						t.Error(next.err)
+					} else {
+						next.release()
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("waiter did not resume after release")
+				}
+			}
+			if blocked {
+				select {
+				case <-result:
+				case <-time.After(2 * time.Second):
+					t.Fatal("business query did not recover after release")
+				}
+				t.Error("registration locks exhausted the business connection pool")
+			}
+			restore()
+		})
+	}
+}
+
 func probeAccountCount(t *testing.T, owner string) int {
 	t.Helper()
 	db := probeDatabase(t)

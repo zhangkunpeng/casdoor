@@ -17,10 +17,11 @@ package object
 import (
 	"github.com/casdoor/casdoor/cred"
 	"github.com/casdoor/casdoor/util"
+	"github.com/xorm-io/xorm"
 )
 
-func calculateHash(user *User) (string, error) {
-	syncer, err := getDbSyncerForUser(user)
+func calculateHash(session *xorm.Session, user *User) (string, error) {
+	syncer, err := getDbSyncerForUser(session, user)
 	if err != nil {
 		return "", err
 	}
@@ -33,7 +34,13 @@ func calculateHash(user *User) (string, error) {
 }
 
 func (user *User) UpdateUserHash() error {
-	hash, err := calculateHash(user)
+	session := ormer.Engine.NewSession()
+	defer session.Close()
+	return user.updateUserHash(session)
+}
+
+func (user *User) updateUserHash(session *xorm.Session) error {
+	hash, err := calculateHash(session, user)
 	if err != nil {
 		return err
 	}

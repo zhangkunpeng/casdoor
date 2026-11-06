@@ -57,8 +57,7 @@ func BindMemberPhone(application *Application, user *User, appID, code string) e
 		return ErrMemberUnauthenticated
 	}
 	current.Phone, current.CountryCode = phone, country
-	if _, err := session.Where("owner = ? AND name = ?", current.Owner, current.Name).
-		Cols("phone", "country_code").Update(&current); err != nil {
+	if _, err := updateUserInSession(session, current.GetId(), &current, []string{"phone", "country_code"}); err != nil {
 		return fmt.Errorf("update trusted member phone; authorize a fresh code: %w", err)
 	}
 	if err := session.Commit(); err != nil {

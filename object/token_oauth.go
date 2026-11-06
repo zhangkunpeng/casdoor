@@ -716,19 +716,6 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 					ErrorDescription: "the phone number is already bound to another wechat account",
 				}, nil
 			}
-
-			user.WeChat = openId
-			if user.Properties == nil {
-				user.Properties = map[string]string{}
-			}
-			user.Properties[UserPropertiesWechatOpenId] = openId
-			if unionId != "" {
-				user.Properties[UserPropertiesWechatUnionId] = unionId
-			}
-			_, err = UpdateUser(user.GetId(), user, []string{"wechat", "properties"}, false)
-			if err != nil {
-				return nil, nil, err
-			}
 		}
 	}
 
@@ -796,6 +783,7 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 	if _, err = SetUserOAuthProperties(organization, user, "WeChat", info, nil); err != nil {
 		return nil, nil, err
 	}
+	release()
 
 	if tokenError := getInactiveUserTokenError(user); tokenError != nil {
 		return nil, tokenError, nil

@@ -1148,13 +1148,15 @@ func (c *ApiController) Login() {
 			}
 		}
 
+		releaseWechatLock := func() {}
 		if provider.Type == "WeChat" {
-			release, lockErr := object.LockWechatOrganization(application.Organization)
+			var lockErr error
+			releaseWechatLock, lockErr = object.LockWechatOrganization(application.Organization)
 			if lockErr != nil {
 				c.ResponseError(lockErr.Error())
 				return
 			}
-			defer release()
+			defer releaseWechatLock()
 		}
 
 		if authForm.Method == "signup" || authForm.Method == "signin" {
@@ -1186,6 +1188,7 @@ func (c *ApiController) Login() {
 					c.ResponseError(err.Error())
 					return
 				}
+				releaseWechatLock()
 
 				if checkMfaEnable(c, user, organization, verificationType) {
 					return
@@ -1374,6 +1377,7 @@ func (c *ApiController) Login() {
 					c.ResponseError(err.Error())
 					return
 				}
+				releaseWechatLock()
 
 				if checkMfaEnable(c, user, organization, verificationType) {
 					return
@@ -1438,6 +1442,7 @@ func (c *ApiController) Login() {
 				c.ResponseError(err.Error())
 				return
 			}
+			releaseWechatLock()
 
 			if isLinked {
 				resp = &Response{Status: "ok", Msg: "", Data: isLinked}

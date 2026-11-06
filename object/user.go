@@ -987,9 +987,6 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 		columns = GetDefaultUserUpdateColumns(isAdmin)
 	}
 
-	columns = append(columns, "updated_time")
-	user.UpdatedTime = util.GetCurrentTime()
-
 	if len(user.DeletedTime) > 0 {
 		columns = append(columns, "deleted_time")
 	}
@@ -1022,22 +1019,29 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 }
 
 func updateUser(id string, user *User, columns []string) (int64, error) {
+	session := ormer.Engine.NewSession()
+	defer session.Close()
+	return updateUserInSession(session, id, user, columns)
+}
+
+func updateUserInSession(session *xorm.Session, id string, user *User, columns []string) (int64, error) {
 	owner, name := util.GetOwnerAndNameFromIdNoCheck(id)
-	err := user.UpdateUserHash()
+	user.UpdatedTime = util.GetCurrentTime()
+	err := user.updateUserHash(session)
 	if err != nil {
 		return 0, err
 	}
 
-	// Ensure hash column is included in updates when columns are specified
-	if len(columns) > 0 && !util.InSlice(columns, "hash") {
-		columns = append(columns, "hash")
+	session = session.ID(core.PK{owner, name})
+	if len(columns) == 0 {
+		return session.AllCols().Update(user)
 	}
-
-	affected, err := ormer.Engine.ID(core.PK{owner, name}).Cols(columns...).Update(user)
-	if err != nil {
-		return 0, err
+	for _, column := range []string{"hash", "updated_time"} {
+		if !util.InSlice(columns, column) {
+			columns = append(columns, column)
+		}
 	}
-	return affected, nil
+	return session.Cols(columns...).Update(user)
 }
 
 func UpdateUserForAllFields(id string, user *User) (bool, error) {
@@ -1065,19 +1069,12 @@ func UpdateUserForAllFields(id string, user *User) (bool, error) {
 		}
 	}
 
-	err = user.UpdateUserHash()
-	if err != nil {
-		return false, err
-	}
-
 	if user.Avatar != oldUser.Avatar && user.Avatar != "" {
 		user.PermanentAvatar, err = getPermanentAvatarUrl(user.Owner, user.Name, user.Avatar, false)
 		if err != nil {
 			return false, err
 		}
 	}
-
-	user.UpdatedTime = util.GetCurrentTime()
 
 	if len(user.Groups) > 0 {
 		_, err = userEnforcer.UpdateGroupsForUser(user.GetId(), user.Groups)
@@ -1086,7 +1083,7 @@ func UpdateUserForAllFields(id string, user *User) (bool, error) {
 		}
 	}
 
-	affected, err := ormer.Engine.ID(core.PK{owner, name}).AllCols().Update(user)
+	affected, err := updateUser(id, user, nil)
 	if err != nil {
 		return false, err
 	}
