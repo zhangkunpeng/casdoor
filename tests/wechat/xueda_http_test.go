@@ -76,9 +76,6 @@ func TestXuedaMemberHTTPInterop(t *testing.T) {
 	web.Router("/api/login/oauth/member-identity", &controllers.ApiController{}, "POST:MemberIdentity")
 	web.Router("/api/login/oauth/member-profile", &controllers.ApiController{}, "POST:MemberProfile")
 	web.Router("/api/login/oauth/member-phone", &controllers.ApiController{}, "POST:MemberPhone")
-	web.Router("/api/login/oauth/member-face", &controllers.ApiController{}, "POST:MemberFace")
-	web.Router("/api/login/oauth/member-face-profile", &controllers.ApiController{}, "POST:MemberFaceProfile")
-	web.Router("/api/login/oauth/member-face-asset", &controllers.ApiController{}, "POST:MemberFaceAsset")
 	web.Router("/.well-known/:application/openid-configuration", &controllers.RootController{}, "GET:GetOidcDiscoveryByApplication")
 	web.Router("/.well-known/:application/jwks", &controllers.RootController{}, "GET:GetJwksByApplication")
 	app := createProbeApplication(t, "airship", name, name+"-wx")
@@ -223,19 +220,6 @@ func TestXuedaMemberHTTPInterop(t *testing.T) {
 	runPhase("admin-revoked")
 	fixture.AdminAccessToken = miniToken(t, adminApp, "different-wechat").AccessToken
 	runPhase("admin-enabled")
-	if _, err := db.Exec("CREATE TRIGGER xueda_face_failure BEFORE INSERT ON member_face_operation FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected face operation failure'"); err != nil {
-		t.Fatal("face failure trigger creation failed")
-	}
-	t.Cleanup(func() { db.Exec("DROP TRIGGER IF EXISTS xueda_face_failure") })
-	runPhase("face-delete-failure")
-	if _, err := db.Exec("DROP TRIGGER xueda_face_failure"); err != nil {
-		t.Fatal("face failure trigger cleanup failed")
-	}
-	runPhase("face-delete-retry")
-	face, err := object.GetMemberFaceProfile("airship", subject)
-	if err != nil || face.Revision != 3 || face.Enabled || face.AssetId != "" {
-		t.Fatal("Xueda face deletion did not persist its original subject version")
-	}
 	failureSession := miniToken(t, app, "new-test-code")
 	fixture.FreshAccessToken, fixture.FreshRefreshToken = failureSession.AccessToken, failureSession.RefreshToken
 	if _, err := db.Exec("CREATE TRIGGER xueda_revoke_failure BEFORE UPDATE ON `token` FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected revocation write failure'"); err != nil {

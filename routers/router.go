@@ -384,9 +384,6 @@ func InitAPI() {
 	web.Router("/api/login/oauth/member-profile", &controllers.ApiController{}, "POST:MemberProfile")
 	web.Router("/api/login/oauth/member-phone", &controllers.ApiController{}, "POST:MemberPhone")
 	web.Router("/api/login/oauth/member-wechat-credential", &controllers.ApiController{}, "POST:MemberWechatCredential")
-	web.Router("/api/login/oauth/member-face", &controllers.ApiController{}, "POST:MemberFace")
-	web.Router("/api/login/oauth/member-face-profile", &controllers.ApiController{}, "POST:MemberFaceProfile")
-	web.Router("/api/login/oauth/member-face-asset", &controllers.ApiController{}, "POST:MemberFaceAsset")
 	web.Router("/api/oauth/register", &controllers.ApiController{}, "POST:DynamicClientRegister")
 	web.Router("/api/oauth/register/:clientId", &controllers.ApiController{}, "GET:DynamicClientRead;PUT:DynamicClientUpdate;DELETE:DynamicClientDelete")
 
