@@ -42,6 +42,9 @@ func (r wechatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if req.URL.Query().Get("js_code") == "different-wechat" {
 			body = `{"openid":"different-open","unionid":"different-union","session_key":"test-only"}`
 		}
+		if req.URL.Query().Get("js_code") == "case-distinct" {
+			body = `{"openid":"case-distinct-open","unionid":"Same-real-union","session_key":"test-only"}`
+		}
 		if req.URL.Query().Get("js_code") == "no-union" {
 			body = `{"openid":"mini-open","session_key":"test-only"}`
 		}
@@ -81,7 +84,7 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-subscribe", "official-openid-only", "mini-openid-only"} {
+	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-subscribe", "different-union-case", "official-openid-only", "mini-openid-only"} {
 		t.Run(scenario, func(t *testing.T) {
 			officialUnion.Store(scenario != "official-openid-only")
 			owner := fmt.Sprintf("wx-%s-%d", scenario, time.Now().UnixNano())
@@ -175,6 +178,10 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			var first, second string
 			var firstErr, secondErr error
 			switch scenario {
+			case "different-union-case":
+				first, firstErr = officialLogin()
+				miniCode = "case-distinct"
+				second, secondErr = miniLogin()
 			case "mini-openid-only":
 				miniCode = "no-union"
 				first, firstErr = miniLogin()
@@ -207,6 +214,12 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			if firstErr != nil || secondErr != nil {
 				t.Fatalf("login errors: %v / %v", firstErr, secondErr)
 			}
+			if scenario == "different-union-case" {
+				if first == "" || second == "" || first == second || probeAccountCount(t, owner) != 2 {
+					t.Fatal("different UnionIDs were treated as the same user")
+				}
+				return
+			}
 			if first == "" || first != second {
 				t.Fatalf("different token subjects: %q / %q", first, second)
 			}
@@ -224,12 +237,22 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			if scenario == "mini-openid-only" {
 				expectedIdentity = "mini-open"
 			}
-			user, err := object.GetUserByField(owner, "WeChat", expectedIdentity)
+			var user *object.User
+			if scenario == "official-openid-only" || scenario == "mini-openid-only" {
+				user, err = object.GetUserByField(owner, "WeChat", expectedIdentity)
+			} else {
+				user, err = object.GetUserByWechatUnionId(owner, expectedIdentity)
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			if user == nil || user.Id != first {
 				t.Fatal("persisted identity differs from token")
+			}
+			if scenario == "mini-first" || scenario == "union-upgrade" {
+				if user.WeChat != "mini-open" || user.Properties[object.UserPropertiesWechatUnionId] != "same-real-union" {
+					t.Fatal("UnionID matching changed native mini-program OpenID storage")
+				}
 			}
 		})
 	}

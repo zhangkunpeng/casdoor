@@ -1168,7 +1168,11 @@ func (c *ApiController) Login() {
 					return
 				}
 			} else if provider.Category == "OAuth" || object.IsFlexibleCustomProvider(provider.Type) {
-				user, err = getUserByProvider(application.Organization, provider, userInfo.Id)
+				if wechatUnionId != "" {
+					user, err = object.GetUserByWechatUnionId(application.Organization, wechatUnionId)
+				} else {
+					user, err = getUserByProvider(application.Organization, provider, userInfo.Id)
+				}
 				if err != nil {
 					c.ResponseError(err.Error())
 					return

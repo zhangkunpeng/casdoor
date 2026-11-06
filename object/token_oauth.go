@@ -680,16 +680,21 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 			ErrorDescription: "the wechat mini program session is invalid",
 		}, nil
 	}
-	wechatId := openId
-	if unionId != "" {
-		wechatId = unionId
-	}
 	release, err := LockWechatUnionID(application.Organization, unionId)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer release()
-	user, err := getUserByWechatId(application.Organization, openId, unionId)
+	var user *User
+	if unionId != "" {
+		user, err = GetUserByWechatUnionId(application.Organization, unionId)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if user == nil {
+		user, err = getUserByWechatId(application.Organization, openId, "")
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -720,7 +725,7 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 				}, nil
 			}
 
-			user.WeChat = wechatId
+			user.WeChat = openId
 			if user.Properties == nil {
 				user.Properties = map[string]string{}
 			}
@@ -772,7 +777,7 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 			Phone:             phone,
 			CountryCode:       countryCode,
 			SignupApplication: application.Name,
-			WeChat:            wechatId,
+			WeChat:            openId,
 			Type:              "normal-user",
 			CreatedTime:       util.GetCurrentTime(),
 			IsAdmin:           false,
@@ -793,13 +798,12 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 		return nil, tokenError, nil
 	}
 
-	if unionId != "" && user.WeChat != unionId {
-		user.WeChat = unionId
+	if unionId != "" && user.Properties[UserPropertiesWechatUnionId] != unionId {
 		if user.Properties == nil {
 			user.Properties = map[string]string{}
 		}
 		user.Properties[UserPropertiesWechatUnionId] = unionId
-		if _, err = UpdateUser(user.GetId(), user, []string{"wechat", "properties"}, false); err != nil {
+		if _, err = UpdateUser(user.GetId(), user, []string{"properties"}, false); err != nil {
 			return nil, nil, err
 		}
 	}

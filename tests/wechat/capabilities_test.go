@@ -1,10 +1,13 @@
 package wechat_test
 
 import (
+	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +19,11 @@ import (
 	"time"
 
 	"github.com/beego/beego/v2/server/web"
+	"github.com/casdoor/casdoor/authz"
+	"github.com/casdoor/casdoor/controllers"
 	"github.com/casdoor/casdoor/object"
 	"github.com/casdoor/casdoor/proxy"
+	"github.com/casdoor/casdoor/routers"
 	"github.com/go-sql-driver/mysql"
 )
 
@@ -175,6 +181,11 @@ func TestWechatWithoutUnionIDUsesNativeLookup(t *testing.T) {
 		user.Properties[object.UserPropertiesWechatUnionId] != "" || user.Properties["oauth_WeChat_extra"] != "" {
 		t.Fatal("no-UnionID login differs from native OpenID lookup and persistence")
 	}
+	withUnion := verifiedSubject(t, a, miniToken(t, a, "new-test-code").AccessToken)
+	withoutUnion := verifiedSubject(t, a, miniToken(t, a, "no-union").AccessToken)
+	if withUnion != first || withoutUnion != first || probeAccountCount(t, owner) != 1 {
+		t.Fatal("UnionID presence changed subsequent native OpenID login")
+	}
 }
 
 func TestWechatUnionIDAcrossProcesses(t *testing.T) {
@@ -239,5 +250,51 @@ func TestWechatProcessHelper(t *testing.T) {
 	subject := verifiedSubject(t, app, miniToken(t, app, "new-test-code").AccessToken)
 	if err := os.WriteFile(os.Getenv("WECHAT_TEST_RESULT"), []byte(subject), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestWechatUnionIDCannotBeChangedBySelf(t *testing.T) {
+	initializeProbe(t, true)
+	authz.InitApi()
+	web.Router("/api/update-user", &controllers.ApiController{}, "POST:UpdateUser")
+	web.InsertFilter("/api/update-user", web.BeforeStatic, routers.RequestBodyFilter)
+	web.InsertFilter("/api/update-user", web.BeforeRouter, routers.AutoSigninFilter)
+	web.InsertFilter("/api/update-user", web.BeforeRouter, routers.ApiFilter)
+	owner := fmt.Sprintf("wx-trusted-%d", time.Now().UnixNano())
+	app := createProbeApplication(t, owner, "mini", "trusted-mini")
+	token := miniToken(t, app, "new-test-code")
+	user, err := object.GetUserByUserId(owner, verifiedSubject(t, app, token.AccessToken))
+	if err != nil || user == nil {
+		t.Fatalf("read authenticated user: %v", err)
+	}
+	body, err := json.Marshal(map[string]any{
+		"properties": map[string]string{object.UserPropertiesWechatUnionId: "forged-union"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(web.BeeApp.Handlers)
+	defer server.Close()
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/api/update-user?id="+user.GetId()+"&columns=properties", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token.AccessToken)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var envelope struct{ Status, Msg string }
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Status != "ok" {
+		t.Fatalf("native authenticated update failed: %s", envelope.Msg)
+	}
+	current, err := object.GetUser(user.GetId())
+	if err != nil || current == nil || current.Properties[object.UserPropertiesWechatUnionId] != "same-real-union" {
+		t.Fatal("self update changed the trusted UnionID")
 	}
 }

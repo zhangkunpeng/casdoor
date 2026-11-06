@@ -17,6 +17,7 @@ package controllers
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/beego/beego/v2/core/utils/pagination"
@@ -322,6 +323,7 @@ func (c *ApiController) UpdateUser() {
 
 	if columnsStr != "" {
 		mergedUser := *oldUser
+		mergedUser.Properties = maps.Clone(oldUser.Properties)
 		if err = json.Unmarshal(c.Ctx.Input.RequestBody, &mergedUser); err != nil {
 			c.ResponseError(err.Error())
 			return

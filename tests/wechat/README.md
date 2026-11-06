@@ -1,10 +1,12 @@
 # 微信登录与手机号绑定
 
-扩展基于官方 Casdoor v4.26.0，仅支持同一组织内的小程序、公众号按可信 UnionID 登录同一账号，以及小程序授权手机号绑定。用户表、通用用户 API、无 UnionID 的 OpenID 查找和持久化沿用原版。无 UnionID 时不增加 AppID 前缀或别名规则。
+扩展基于官方 Casdoor v4.26.0，仅支持同一组织内的小程序、公众号按可信 UnionID 登录同一账号，以及小程序授权手机号绑定。用户表、通用用户 API、无 UnionID 的 OpenID 查找和持久化沿用原版。UnionID 仅查询原生微信字段及已有 `properties.wechatUnionId`；小程序保留原生 OpenID 存储。无 UnionID 时不增加 AppID 前缀或别名规则，曾返回 UnionID 不影响后续 OpenID 登录。
 
 公众号扫码回调通过该公众号凭据查询微信用户信息；需有 `cgi-bin/user/info` 权限并与小程序绑定同一微信开放平台。微信返回 UnionID 时使用它，未返回时保留原生 OpenID。查询失败或返回不匹配的 OpenID 时拒绝本次回调。
 
 有 UnionID 的首次登录通过 MySQL advisory lock 防止跨进程重复建号；锁仅覆盖同一数据库、组织、UnionID，使用临时独立连接，退出登录流程时关闭连接释放。无 UnionID 不加锁。本扩展的 UnionID 登录要求 MySQL；不自动合并已存在的重复账号。
+
+`Properties` 须保留原生仅管理员修改的配置。局部用户更新复制 Properties map，确保原生权限检查比较的是更新前后的两个值，防止本人伪造用于登录匹配的 UnionID；不新增权限框架。
 
 `POST /api/login/oauth/member-phone` 由服务端调用，使用应用 Basic 凭据，并提交 `access_token`、该应用配置的小程序 `app_id` 和微信 `getPhoneNumber` 授权 `code`。仅更新有效访问令牌所属账号，复用原生 `GetPhoneNumber`、地区解析和 `UpdateUser`。不新增 `phone:write` scope。Basic 凭据必须保存在服务端。
 

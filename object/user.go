@@ -534,6 +534,23 @@ func getUserByWechatId(owner string, wechatOpenId string, wechatUnionId string) 
 	}
 }
 
+func GetUserByWechatUnionId(owner, unionId string) (*User, error) {
+	if unionId == "" {
+		return nil, nil
+	}
+	user := &User{}
+	existed, err := ormer.Engine.Where("owner = ?", owner).
+		Where("BINARY wechat = ? OR BINARY JSON_UNQUOTE(JSON_EXTRACT(NULLIF(properties, ''), ?)) = ?",
+			unionId, "$."+UserPropertiesWechatUnionId, unionId).Get(user)
+	if err != nil {
+		return nil, err
+	}
+	if !existed {
+		return nil, nil
+	}
+	return user, nil
+}
+
 func GetUserByEmail(owner string, email string) (*User, error) {
 	if owner == "" || email == "" {
 		return nil, nil
