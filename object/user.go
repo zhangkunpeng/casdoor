@@ -613,6 +613,10 @@ func GetUserByEmailOnly(email string) (*User, error) {
 }
 
 func GetUserByPhone(owner string, phone string) (*User, error) {
+	return getUserByPhone(ormer.Engine, owner, phone)
+}
+
+func getUserByPhone(query xorm.Interface, owner string, phone string) (*User, error) {
 	if owner == "" || phone == "" {
 		return nil, nil
 	}
@@ -620,7 +624,7 @@ func GetUserByPhone(owner string, phone string) (*User, error) {
 	nationalPhone, regionCode := util.ParseE164Phone(phone)
 
 	user := User{Owner: owner, Phone: nationalPhone, CountryCode: regionCode}
-	existed, err := ormer.Engine.Get(&user)
+	existed, err := query.Get(&user)
 	if err != nil {
 		return nil, err
 	}
@@ -1600,7 +1604,22 @@ func GetUserInfo(user *User, scope string, aud string, host string) (*Userinfo, 
 }
 
 func LinkUserAccount(user *User, field string, value string) (bool, error) {
-	return SetUserField(user, field, value)
+	return mutateUser(user, func(session *xorm.Session, current *User) error {
+		table, err := session.Engine().TableInfo(current)
+		if err != nil {
+			return err
+		}
+		column := table.GetColumn(strings.ToLower(field))
+		if column == nil {
+			return fmt.Errorf("invalid provider field: %s", field)
+		}
+		target := reflect.ValueOf(current).Elem().FieldByName(column.FieldName)
+		if !target.IsValid() || target.Kind() != reflect.String || !target.CanSet() {
+			return fmt.Errorf("invalid provider field: %s", field)
+		}
+		target.SetString(value)
+		return nil
+	})
 }
 
 func LinkFlexibleCustomAccount(user *User, providerName string, providerId string) (bool, error) {

@@ -22,6 +22,7 @@ import (
 	"github.com/casdoor/casdoor/idp"
 	"github.com/casdoor/casdoor/util"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/xorm-io/xorm"
 )
 
 func GetOAuthToken(grantType string, clientId string, clientSecret string, code string, verifier string, scope string, nonce string, username string, password string, countryCode string, host string, refreshToken string, tag string, avatar string, phoneCode string, phoneRequired bool, lang string, subjectToken string, subjectTokenType string, requestedTokenType string, assertion string, clientAssertion string, clientAssertionType string, audience string, resource string, dpopProof string, clientIp string) (interface{}, error) {
@@ -635,15 +636,15 @@ func GetTokenByUserWithAuth(application *Application, user *User, scope string, 
 	return token, nil
 }
 
-func getUserByWechatMiniProgramPhone(owner string, e164Phone string, nationalPhone string) (*User, error) {
-	user, err := GetUserByPhone(owner, e164Phone)
+func getUserByWechatMiniProgramPhone(query xorm.Interface, owner string, e164Phone string, nationalPhone string) (*User, error) {
+	user, err := getUserByPhone(query, owner, e164Phone)
 	if err != nil || user != nil {
 		return user, err
 	}
 
 	// users created before country codes were stored
 	user = &User{}
-	existed, err := ormer.Engine.Where("owner = ? and phone = ? and country_code = ''", owner, nationalPhone).Get(user)
+	existed, err := query.Where("owner = ? and phone = ? and country_code = ''", owner, nationalPhone).Get(user)
 	if err != nil || !existed {
 		return nil, err
 	}
@@ -710,7 +711,7 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 		}
 		phone, countryCode = util.ParseE164Phone(e164Phone)
 
-		user, err = getUserByWechatMiniProgramPhone(application.Organization, e164Phone, phone)
+		user, err = getUserByWechatMiniProgramPhone(ormer.Engine, application.Organization, e164Phone, phone)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -725,15 +726,17 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 				}, nil
 			}
 
-			user.WeChat = openId
-			if user.Properties == nil {
-				user.Properties = map[string]string{}
-			}
-			user.Properties[UserPropertiesWechatOpenId] = openId
-			if unionId != "" {
-				user.Properties[UserPropertiesWechatUnionId] = unionId
-			}
-			_, err = UpdateUser(user.GetId(), user, []string{"wechat", "properties"}, false)
+			_, err = mutateUser(user, func(tx *xorm.Session, current *User) error {
+				matched, err := getUserByWechatMiniProgramPhone(tx, application.Organization, e164Phone, phone)
+				if err != nil {
+					return err
+				}
+				if matched == nil || matched.Id != current.Id || matched.Name != current.Name || current.WeChat != "" {
+					return errUserMutationUnavailable
+				}
+				setWechatIdentity(current, openId, unionId)
+				return nil
+			})
 			if err != nil {
 				return nil, nil, err
 			}
@@ -800,13 +803,10 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 
 	if unionId != "" && (user.WeChat != openId || user.Properties[UserPropertiesWechatUnionId] != unionId ||
 		user.Properties[UserPropertiesWechatOpenId] != openId) {
-		if user.Properties == nil {
-			user.Properties = map[string]string{}
-		}
-		user.Properties[UserPropertiesWechatUnionId] = unionId
-		user.Properties[UserPropertiesWechatOpenId] = openId
-		user.WeChat = openId
-		if _, err = UpdateUser(user.GetId(), user, []string{"wechat", "properties"}, false); err != nil {
+		if _, err = mutateUser(user, func(_ *xorm.Session, current *User) error {
+			setWechatIdentity(current, openId, unionId)
+			return nil
+		}); err != nil {
 			return nil, nil, err
 		}
 	}
@@ -845,6 +845,14 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 		return nil, nil, err
 	}
 	return token, nil, nil
+}
+
+func setWechatIdentity(user *User, openId, unionId string) {
+	user.WeChat = openId
+	setUserProperty(user, UserPropertiesWechatOpenId, openId)
+	if unionId != "" {
+		setUserProperty(user, UserPropertiesWechatUnionId, unionId)
+	}
 }
 
 // GetTokenExchangeToken handles the Token Exchange Grant flow (RFC 8693).

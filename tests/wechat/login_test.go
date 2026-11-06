@@ -84,9 +84,9 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-subscribe", "different-union-case", "official-openid-only", "mini-openid-only", "official-union-upgrade"} {
+	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-subscribe", "different-union-case", "official-openid-only", "mini-openid-only", "official-union-upgrade", "official-stale"} {
 		t.Run(scenario, func(t *testing.T) {
-			officialUnion.Store(scenario != "official-openid-only" && scenario != "official-union-upgrade")
+			officialUnion.Store(scenario != "official-openid-only" && scenario != "official-union-upgrade" && scenario != "official-stale")
 			owner := fmt.Sprintf("wx-%s-%d", scenario, time.Now().UnixNano())
 			org := &object.Organization{Owner: "admin", Name: owner, PasswordType: "bcrypt", DefaultTokenFormat: "JWT"}
 			if _, err := object.AddOrganization(org); err != nil {
@@ -178,6 +178,39 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			var first, second string
 			var firstErr, secondErr error
 			switch scenario {
+			case "official-stale":
+				first, firstErr = officialLogin()
+				if firstErr != nil {
+					t.Fatal(firstErr)
+				}
+				barrier := &userReadBarrier{owner: owner, sql: "wechat=?", reached: make(chan struct{}), resume: make(chan struct{})}
+				barrier.armed.Store(true)
+				registerProbeHook(t, barrier)
+				var release sync.Once
+				resume := func() { barrier.armed.Store(false); release.Do(func() { close(barrier.resume) }) }
+				defer resume()
+				staleDone := make(chan error, 1)
+				go func() {
+					subject, err := officialLogin()
+					if err == nil && subject != first {
+						err = fmt.Errorf("old login changed subject")
+					}
+					staleDone <- err
+				}()
+				select {
+				case <-barrier.reached:
+				case <-time.After(10 * time.Second):
+					t.Fatal("official login did not reach its native user lookup")
+				}
+				officialUnion.Store(true)
+				second, secondErr = officialLogin()
+				resume()
+				if err := <-staleDone; err != nil {
+					t.Fatal(err)
+				}
+				if subject, err := miniLogin(); err != nil || subject != first {
+					t.Fatalf("mini login after overlapping official writes: %v", err)
+				}
 			case "official-union-upgrade":
 				first, firstErr = officialLogin()
 				officialUnion.Store(true)

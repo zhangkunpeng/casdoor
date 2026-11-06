@@ -103,7 +103,7 @@ func AutoSigninFilter(ctx *context.Context) {
 				responseInvalidToken(ctx, token, "invalid_dpop_proof", "DPoP proof header required for DPoP-bound access token")
 				return
 			}
-			htu := object.GetDPoPHtu(ctx.Request.Host, ctx.Request.URL.Path)
+			htu := object.GetDPoPHtu(ctx.Request.Host, ctx.Request.URL.EscapedPath())
 			jkt, dpopErr := object.ValidateDPoPProof(dpopProof, ctx.Request.Method, htu, accessToken)
 			if dpopErr != nil {
 				responseInvalidToken(ctx, token, "invalid_dpop_proof", fmt.Sprintf("DPoP proof validation failed: %s", dpopErr.Error()))

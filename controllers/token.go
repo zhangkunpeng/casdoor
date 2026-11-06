@@ -604,11 +604,13 @@ func (c *ApiController) ValidateOAuth(ignoreValidSecret bool) (ok bool, applicat
 	if clientAssertionType == "urn:ietf:params:oauth:client-assertion-type:jwt-bearer" {
 		ok, application, err = object.ValidateClientAssertion(clientAssertion, reqClientId, c.Ctx.Request.Host)
 		if err != nil {
+			ok = false
 			c.ResponseTokenError(object.InvalidClient, err.Error())
 			return
 		}
 
 		if !ok || application == nil {
+			ok = false
 			c.ResponseTokenError(object.InvalidClient, "client_assertion is invalid")
 			return
 		}
@@ -620,8 +622,9 @@ func (c *ApiController) ValidateOAuth(ignoreValidSecret bool) (ok bool, applicat
 	}
 
 	if reqClientId == "" && reqClientSecret == "" {
-		clientId, clientSecret, ok = c.getClientBasicAuth()
-		if !ok {
+		var basicOK bool
+		clientId, clientSecret, basicOK = c.getClientBasicAuth()
+		if !basicOK {
 			clientId = c.Ctx.Input.Query("client_id")
 			clientSecret = c.Ctx.Input.Query("client_secret")
 			if clientId == "" || clientSecret == "" {

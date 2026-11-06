@@ -19,8 +19,11 @@ func (c *ApiController) MemberPhone() {
 	if err != nil || !ok {
 		return
 	}
-	err = object.BindMemberPhone(application, c.Ctx.Input.Query("access_token"), c.Ctx.Input.Query("app_id"),
-		c.Ctx.Input.Query("code"))
+	err = object.BindMemberPhoneWithProof(application, c.Ctx.Input.Query("token"), c.Ctx.Input.Query("app_id"),
+		c.Ctx.Input.Query("code"), object.MemberAccessProof{
+			DPoP: c.Ctx.Request.Header.Get("DPoP"), Method: c.Ctx.Request.Method,
+			URI: object.GetDPoPHtu(c.Ctx.Request.Host, c.Ctx.Request.URL.EscapedPath()),
+		})
 	if err != nil {
 		c.memberOperationError(err)
 		return

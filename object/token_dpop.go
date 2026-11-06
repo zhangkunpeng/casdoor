@@ -20,6 +20,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -115,12 +116,12 @@ func ValidateDPoPProof(proofToken, method, htu, accessToken string) (string, err
 	}
 
 	// htm MUST match the HTTP request method (RFC 9449 §4.2).
-	if !strings.EqualFold(claims.Htm, method) {
+	if claims.Htm != method {
 		return "", fmt.Errorf("DPoP proof htm %q does not match request method %q", claims.Htm, method)
 	}
 
 	// htu MUST match the request URL without query/fragment (RFC 9449 §4.2).
-	if !strings.EqualFold(claims.Htu, htu) {
+	if !equalDPoPURI(claims.Htu, htu) {
 		return "", fmt.Errorf("DPoP proof htu %q does not match request URL %q", claims.Htu, htu)
 	}
 
@@ -149,6 +150,19 @@ func ValidateDPoPProof(proofToken, method, htu, accessToken string) (string, err
 	}
 
 	return jkt, nil
+}
+
+func equalDPoPURI(proofURI, requestURI string) bool {
+	proof, err := url.Parse(proofURI)
+	if err != nil {
+		return false
+	}
+	request, err := url.Parse(requestURI)
+	if err != nil || proof.Host == "" || request.Host == "" || proof.User != nil || request.User != nil {
+		return false
+	}
+	return strings.EqualFold(proof.Scheme, request.Scheme) &&
+		strings.EqualFold(proof.Host, request.Host) && proof.EscapedPath() == request.EscapedPath()
 }
 
 // GetDPoPHtu constructs the full DPoP htu URL for a given host and path.

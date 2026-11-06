@@ -47,7 +47,7 @@ func TestWechatMemberPhoneFreshCodeForAlreadyBoundPhone(t *testing.T) {
 			continue
 		}
 		status := memberMutation(t, server.URL, "member-phone", app, url.Values{
-			"access_token": {token.AccessToken}, "app_id": {"repeat-mini"}, "code": {fmt.Sprintf("fresh-noop-%d", attempt)},
+			"token": {token.AccessToken}, "app_id": {"repeat-mini"}, "code": {fmt.Sprintf("fresh-noop-%d", attempt)},
 		})
 		if second != util.GetCurrentTime() {
 			continue
@@ -128,8 +128,10 @@ func (r pausedPhoneTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	case <-req.Context().Done():
 		return nil, req.Context().Err()
 	}
-	return &http.Response{StatusCode: 200, Header: make(http.Header), Request: req,
-		Body: io.NopCloser(strings.NewReader(`{"errcode":0,"phone_info":{"purePhoneNumber":"13800000000","countryCode":"86"}}`))}, nil
+	return &http.Response{
+		StatusCode: 200, Header: make(http.Header), Request: req,
+		Body: io.NopCloser(strings.NewReader(`{"errcode":0,"phone_info":{"purePhoneNumber":"13800000000","countryCode":"86"}}`)),
+	}, nil
 }
 
 func TestWechatMemberPhoneRechecksAuthorizationAtWrite(t *testing.T) {
@@ -162,8 +164,10 @@ func TestWechatMemberPhoneRechecksAuthorizationAtWrite(t *testing.T) {
 				if _, err := object.UpdateUser(util.GetId(user.Owner, originalName), user, []string{"name"}, true); err != nil {
 					t.Fatal(err)
 				}
-				replacement := &object.User{Owner: user.Owner, Name: originalName, Id: util.GenerateId(),
-					Type: "normal-user", CreatedTime: util.GetCurrentTime()}
+				replacement := &object.User{
+					Owner: user.Owner, Name: originalName, Id: util.GenerateId(),
+					Type: "normal-user", CreatedTime: util.GetCurrentTime(),
+				}
 				if _, err := object.AddUser(replacement, "en"); err != nil {
 					t.Fatal(err)
 				}
@@ -264,7 +268,7 @@ func TestWechatMemberPhoneUniqueness(t *testing.T) {
 			}
 			bind := func(token *object.Token, code string) int {
 				return memberMutation(t, server.URL, "member-phone", app, url.Values{
-					"access_token": {token.AccessToken}, "app_id": {"unique-mini"}, "code": {code},
+					"token": {token.AccessToken}, "app_id": {"unique-mini"}, "code": {code},
 				})
 			}
 			results := make(chan int, 2)
@@ -319,8 +323,10 @@ func (r phoneTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if _, loaded := r.used.LoadOrStore(request.Code, true); loaded {
 		body = `{"errcode":40029}`
 	}
-	return &http.Response{StatusCode: 200, Header: make(http.Header),
-		Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+	return &http.Response{
+		StatusCode: 200, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(body)), Request: req,
+	}, nil
 }
 
 func memberMutation(t *testing.T, server, path string, app *object.Application, values url.Values) int {
@@ -355,11 +361,13 @@ func TestWechatMemberPhone(t *testing.T) {
 	session := miniToken(t, app, "new-test-code")
 	subject := verifiedSubject(t, app, session.AccessToken)
 	db := probeDatabase(t)
-	syncer := &object.Syncer{Owner: "admin", Name: app.Name, Organization: app.Organization,
+	syncer := &object.Syncer{
+		Owner: "admin", Name: app.Name, Organization: app.Organization,
 		Type: "Database", TableColumns: []*object.TableColumn{
 			{Name: "phone", CasdoorName: "Phone", IsHashed: true},
 			{Name: "country", CasdoorName: "CountryCode", IsHashed: true},
-		}}
+		},
+	}
 	if _, err := object.AddSyncer(syncer); err != nil {
 		t.Fatal(err)
 	}
@@ -385,15 +393,17 @@ func TestWechatMemberPhone(t *testing.T) {
 	}
 	server := httptest.NewServer(web.BeeApp.Handlers)
 	defer server.Close()
-	values := url.Values{"access_token": {session.AccessToken}, "app_id": {"phone-mini"},
-		"code": {"trusted-phone-code"}}
+	values := url.Values{
+		"token": {session.AccessToken}, "app_id": {"phone-mini"},
+		"code": {"trusted-phone-code"},
+	}
 	for _, denied := range []struct {
 		field, value string
 		status       int
 	}{
-		{"access_token", "", http.StatusUnauthorized},
-		{"access_token", session.IdToken, http.StatusUnauthorized},
-		{"access_token", session.RefreshToken, http.StatusUnauthorized},
+		{"token", "", http.StatusUnauthorized},
+		{"token", session.IdToken, http.StatusUnauthorized},
+		{"token", session.RefreshToken, http.StatusUnauthorized},
 		{"app_id", "unconfigured-mini", http.StatusForbidden},
 		{"code", "", http.StatusBadRequest},
 	} {
@@ -430,11 +440,11 @@ func TestWechatMemberPhone(t *testing.T) {
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusServiceUnavailable {
 		t.Fatal("consumed authorization code was treated as a recoverable operation")
 	}
-	values.Set("access_token", session.IdToken)
+	values.Set("token", session.IdToken)
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusUnauthorized {
 		t.Fatal("ID token authorized phone mutation")
 	}
-	values.Set("access_token", session.AccessToken)
+	values.Set("token", session.AccessToken)
 	values.Set("code", "retryable-phone-code")
 	if _, err := db.Exec("CREATE TRIGGER xueda_phone_failure BEFORE UPDATE ON `user` FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected phone write failure'"); err != nil {
 		t.Fatal("phone failure trigger creation failed")
@@ -478,7 +488,7 @@ func TestWechatMemberPhone(t *testing.T) {
 		t.Fatal("revoked token mutated phone")
 	}
 	session = miniToken(t, app, "new-test-code")
-	values.Set("access_token", session.AccessToken)
+	values.Set("token", session.AccessToken)
 	user.IsForbidden = true
 	if _, err := object.UpdateUser(user.GetId(), user, []string{"is_forbidden"}, true); err != nil {
 		t.Fatal("member disable failed")

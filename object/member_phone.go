@@ -30,34 +30,17 @@ func memberWechatProvider(application *Application, appID string) (*Provider, er
 	return nil, ErrMemberAppDenied
 }
 
-func checkMemberPhoneToken(application *Application, token *Token) error {
-	if token == nil || token.ExpiresIn <= 0 || token.User == "" || token.Owner != application.Owner ||
-		token.Application != application.Name || token.Organization != application.Organization {
-		return ErrMemberUnauthenticated
-	}
-	if expired, _ := util.IsTokenExpired(token.CreatedTime, token.ExpiresIn); expired {
-		return ErrMemberUnauthenticated
-	}
-	return nil
+func BindMemberPhone(application *Application, accessToken, appID, code string) error {
+	return BindMemberPhoneWithProof(application, accessToken, appID, code, MemberAccessProof{})
 }
 
-func BindMemberPhone(application *Application, accessToken, appID, code string) error {
+func BindMemberPhoneWithProof(application *Application, accessToken, appID, code string, proof MemberAccessProof) error {
 	if code == "" || len(code) > 1024 {
 		return ErrMemberInvalid
 	}
-	token, err := GetTokenByAccessToken(accessToken)
+	token, user, err := resolvePhoneUserAccess(application, accessToken, proof)
 	if err != nil {
-		return fmt.Errorf("read phone binding access token: %w", err)
-	}
-	if err := checkMemberPhoneToken(application, token); err != nil {
 		return err
-	}
-	user, err := GetUser(util.GetId(token.Organization, token.User))
-	if err != nil {
-		return fmt.Errorf("read phone binding user: %w", err)
-	}
-	if user == nil || user.IsForbidden || user.IsDeleted {
-		return ErrMemberUnauthenticated
 	}
 	provider, err := memberWechatProvider(application, appID)
 	if err != nil {
@@ -82,36 +65,35 @@ func BindMemberPhone(application *Application, accessToken, appID, code string) 
 	defer session.Rollback()
 
 	// Serialize bindings before taking user locks so two accounts cannot claim the same phone.
-	organization := Organization{Owner: "admin", Name: user.Owner}
-	found, err := session.ForUpdate().Get(&organization)
+	organization := Organization{}
+	found, err := getForUpdate(session, &organization, "admin", user.Owner)
 	if err != nil {
 		return fmt.Errorf("lock phone binding organization: %w", err)
 	}
 	if !found {
 		return ErrMemberUnauthenticated
 	}
-	currentToken := Token{Owner: token.Owner, Name: token.Name}
-	found, err = session.ForUpdate().Get(&currentToken)
+	currentToken := Token{}
+	found, err = getForUpdate(session, &currentToken, token.Owner, token.Name)
 	if err != nil {
 		return fmt.Errorf("lock phone binding token: %w", err)
 	}
-	if !found || currentToken.AccessTokenHash != token.AccessTokenHash || currentToken.User != user.Name {
+	if !found {
 		return ErrMemberUnauthenticated
 	}
-	if err := checkMemberPhoneToken(application, &currentToken); err != nil {
+	if err := checkCurrentMemberPhoneToken(application, token, &currentToken); err != nil {
 		return err
 	}
-	current := User{Owner: user.Owner, Name: user.Name}
-	found, err = session.ForUpdate().Get(&current)
+	current, err := lockUserForMutation(session, user)
 	if err != nil {
-		return fmt.Errorf("lock phone binding user: %w", err)
+		if errors.Is(err, errUserMutationUnavailable) {
+			return errors.Join(ErrMemberUnauthenticated, err)
+		}
+		return err
 	}
-	if !found || current.Id != user.Id || current.IsForbidden || current.IsDeleted {
-		return ErrMemberUnauthenticated
-	}
-	updated := current
+	updated := *current
 	updated.Phone, updated.CountryCode = phone, country
-	msg, err := checkUserPhone(&current, &updated, "en", session.ForUpdate())
+	msg, err := checkUserPhone(current, &updated, "en", session)
 	if err != nil {
 		return fmt.Errorf("check trusted member phone: %w", err)
 	}
@@ -122,7 +104,7 @@ func BindMemberPhone(application *Application, accessToken, appID, code string) 
 	if err != nil {
 		return fmt.Errorf("prepare trusted member phone: %w", err)
 	}
-	if err := checkMemberPhoneToken(application, &currentToken); err != nil {
+	if err := checkCurrentMemberPhoneToken(application, token, &currentToken); err != nil {
 		return err
 	}
 	affected, err := updateUserInSession(session, current.GetId(), &updated, columns)

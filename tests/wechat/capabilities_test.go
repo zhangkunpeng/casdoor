@@ -57,6 +57,9 @@ func initializeProbe(t *testing.T, create bool) {
 		_, source, _, _ := runtime.Caller(0)
 		web.TestBeegoInit(filepath.Clean(filepath.Join(filepath.Dir(source), "../..")))
 		object.InitAdapter()
+		session := object.GetSession("", -1, -1, "", "", "", "")
+		session.Engine().AddHook(&probeHooks)
+		session.Close()
 		if create {
 			object.CreateTables()
 			object.InitDb()
@@ -84,17 +87,21 @@ func createProbeApplication(t *testing.T, owner, suffix, appID string) *object.A
 			t.Fatal(err)
 		}
 	}
-	p := &object.Provider{Owner: "admin", Name: owner + "-" + suffix,
-		Category: "OAuth", Type: "WeChatMiniProgram", ClientId: appID, ClientSecret: "test-only"}
+	p := &object.Provider{
+		Owner: "admin", Name: owner + "-" + suffix,
+		Category: "OAuth", Type: "WeChatMiniProgram", ClientId: appID, ClientSecret: "test-only",
+	}
 	if _, err := object.AddProvider(p); err != nil {
 		t.Fatal(err)
 	}
-	app := &object.Application{Owner: "admin", Name: p.Name, Organization: owner,
+	app := &object.Application{
+		Owner: "admin", Name: p.Name, Organization: owner,
 		ClientId: p.Name + "-client", ClientSecret: "test-only", EnableSignUp: true,
 		TokenFormat: "JWT", GrantTypes: []string{"token", "refresh_token"},
 		Cert: "cert-built-in", ExpireInHours: 0.25,
 		Providers:   []*object.ProviderItem{{Name: p.Name, CanSignUp: true, CanSignIn: true, Provider: p}},
-		SignupItems: []*object.SignupItem{{Name: "ID", Rule: "Random"}}}
+		SignupItems: []*object.SignupItem{{Name: "ID", Rule: "Random"}},
+	}
 	if _, err := object.AddApplication(app, "en"); err != nil {
 		t.Fatal(err)
 	}
