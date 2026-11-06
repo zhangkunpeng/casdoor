@@ -30,6 +30,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/xorm-io/core"
+	"github.com/xorm-io/xorm"
 	"golang.org/x/oauth2"
 )
 
@@ -86,12 +87,16 @@ func HasUserByField(organizationName string, field string, value string) bool {
 }
 
 func GetUserByPhoneAndCountryCode(organizationName string, phone string, countryCode string) (*User, error) {
+	return getUserByPhoneAndCountryCode(ormer.Engine, organizationName, phone, countryCode)
+}
+
+func getUserByPhoneAndCountryCode(query xorm.Interface, organizationName string, phone string, countryCode string) (*User, error) {
 	if phone == "" {
 		return nil, nil
 	}
 
 	user := User{Owner: organizationName, Phone: phone, CountryCode: countryCode}
-	existed, err := ormer.Engine.Get(&user)
+	existed, err := query.Get(&user)
 	if err != nil {
 		return nil, err
 	}
@@ -343,7 +348,31 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 	if IsFlexibleCustomProvider(providerType) {
 		return true, nil
 	}
+	avatarURL := userInfo.AvatarUrl
+	var err error
+	if avatarURL != "" && organization.UsePermanentAvatar {
+		avatarURL, err = resolveOAuthPermanentAvatar(user, fmt.Sprintf("oauth_%s_avatarUrl", providerType), avatarURL)
+		if err != nil {
+			return false, err
+		}
+	}
+	permanentAvatar, err := getPermanentAvatarUrl(user.Owner, user.Name, avatarURL, false)
+	if err != nil {
+		return false, err
+	}
+	return mutateUser(user, func(_ *xorm.Session, current *User) error {
+		previousAvatar := current.Avatar
+		if err := applyUserOAuthProperties(organization, current, providerType, userInfo, token, avatarURL, userMapping...); err != nil {
+			return err
+		}
+		if current.Avatar != previousAvatar && current.Avatar != "" {
+			current.PermanentAvatar = permanentAvatar
+		}
+		return nil
+	})
+}
 
+func applyUserOAuthProperties(organization *Organization, user *User, providerType string, userInfo *idp.UserInfo, token *oauth2.Token, avatarURL string, userMapping ...map[string]string) error {
 	// Store the original OAuth provider token if available
 	if token != nil && token.AccessToken != "" {
 		// Store tokens per provider in Properties map
@@ -390,20 +419,23 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 	if userInfo.UnionId != "" {
 		propertyName := fmt.Sprintf("oauth_%s_unionId", providerType)
 		setUserProperty(user, propertyName, userInfo.UnionId)
+		if providerType == "WeChat" {
+			setUserProperty(user, UserPropertiesWechatUnionId, userInfo.UnionId)
+		}
 	}
 
 	if userInfo.AvatarUrl != "" {
 		propertyName := fmt.Sprintf("oauth_%s_avatarUrl", providerType)
-
+		oldAvatarURL := getUserProperty(user, propertyName)
+		setUserProperty(user, propertyName, avatarURL)
 		if organization.UsePermanentAvatar {
-			err := syncOAuthAvatarToPermanentStorage(organization, user, propertyName, userInfo.AvatarUrl)
-			if err != nil {
-				return false, err
+			if user.Avatar == "" || user.Avatar == organization.DefaultAvatar ||
+				user.Avatar == userInfo.AvatarUrl || (oldAvatarURL != "" && user.Avatar == oldAvatarURL) {
+				user.Avatar = avatarURL
 			}
 		} else {
-			setUserProperty(user, propertyName, userInfo.AvatarUrl)
 			if user.Avatar == "" || user.Avatar == organization.DefaultAvatar {
-				user.Avatar = userInfo.AvatarUrl
+				user.Avatar = avatarURL
 			}
 		}
 	}
@@ -420,7 +452,7 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 		extra := make(map[string]string)
 		if oldExtraJson != "" {
 			if err := jsoniter.Unmarshal([]byte(oldExtraJson), &extra); err != nil {
-				return false, err
+				return err
 			}
 		}
 		for k, v := range userInfo.Extra {
@@ -429,25 +461,21 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 
 		newExtraJson, err := jsoniter.Marshal(extra)
 		if err != nil {
-			return false, err
+			return err
 		}
 		setUserProperty(user, propertyName, string(newExtraJson))
 	}
 
-	return UpdateUserForAllFields(user.GetId(), user)
+	return nil
 }
 
-// syncOAuthAvatarToPermanentStorage ensures the user's avatar is stored in permanent storage.
-// It checks whether a permanent avatar already exists for the given sourceAvatarURL.
-// If not, it uploads the avatar and retrieves a permanent URL.
-// Finally, it updates the user's avatar fields with the resolved permanent URL.
-func syncOAuthAvatarToPermanentStorage(organization *Organization, user *User, propertyName, sourceAvatarUrl string) error {
+func resolveOAuthPermanentAvatar(user *User, propertyName, sourceAvatarUrl string) (string, error) {
 	oldAvatarUrl := getUserProperty(user, propertyName)
 
 	avatarUrl := sourceAvatarUrl
 	permanentAvatarUrl, err := getPermanentAvatarUrl(user.Owner, user.Name, sourceAvatarUrl, false)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	if permanentAvatarUrl != "" {
@@ -456,7 +484,7 @@ func syncOAuthAvatarToPermanentStorage(organization *Organization, user *User, p
 		if oldAvatarUrl != permanentAvatarUrl {
 			avatarUrl, err = getPermanentAvatarUrl(user.Owner, user.Name, sourceAvatarUrl, true)
 			if err != nil {
-				return err
+				return "", err
 			}
 			if avatarUrl == "" {
 				avatarUrl = permanentAvatarUrl
@@ -464,16 +492,7 @@ func syncOAuthAvatarToPermanentStorage(organization *Organization, user *User, p
 		}
 	}
 
-	setUserProperty(user, propertyName, avatarUrl)
-
-	if user.Avatar == "" ||
-		user.Avatar == organization.DefaultAvatar ||
-		user.Avatar == sourceAvatarUrl ||
-		(oldAvatarUrl != "" && user.Avatar == oldAvatarUrl) {
-		user.Avatar = avatarUrl
-	}
-
-	return nil
+	return avatarUrl, nil
 }
 
 func applyUserMapping(user *User, extraClaims map[string]string, userMapping map[string]string) {

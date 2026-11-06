@@ -534,6 +534,23 @@ func getUserByWechatId(owner string, wechatOpenId string, wechatUnionId string) 
 	}
 }
 
+func GetUserByWechatUnionId(owner, unionId string) (*User, error) {
+	if unionId == "" {
+		return nil, nil
+	}
+	user := &User{}
+	existed, err := ormer.Engine.Where("owner = ?", owner).
+		Where("BINARY wechat = ? OR BINARY JSON_UNQUOTE(JSON_EXTRACT(NULLIF(properties, ''), ?)) = ?",
+			unionId, "$."+UserPropertiesWechatUnionId, unionId).Get(user)
+	if err != nil {
+		return nil, err
+	}
+	if !existed {
+		return nil, nil
+	}
+	return user, nil
+}
+
 func GetUserByEmail(owner string, email string) (*User, error) {
 	if owner == "" || email == "" {
 		return nil, nil
@@ -596,6 +613,10 @@ func GetUserByEmailOnly(email string) (*User, error) {
 }
 
 func GetUserByPhone(owner string, phone string) (*User, error) {
+	return getUserByPhone(ormer.Engine, owner, phone)
+}
+
+func getUserByPhone(query xorm.Interface, owner string, phone string) (*User, error) {
 	if owner == "" || phone == "" {
 		return nil, nil
 	}
@@ -603,7 +624,7 @@ func GetUserByPhone(owner string, phone string) (*User, error) {
 	nationalPhone, regionCode := util.ParseE164Phone(phone)
 
 	user := User{Owner: owner, Phone: nationalPhone, CountryCode: regionCode}
-	existed, err := ormer.Engine.Get(&user)
+	existed, err := query.Get(&user)
 	if err != nil {
 		return nil, err
 	}
@@ -998,7 +1019,6 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 	}
 
 	columns = append(columns, "updated_time")
-	user.UpdatedTime = util.GetCurrentTime()
 
 	if len(user.DeletedTime) > 0 {
 		columns = append(columns, "deleted_time")
@@ -1032,18 +1052,34 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 }
 
 func updateUser(id string, user *User, columns []string) (int64, error) {
-	owner, name := util.GetOwnerAndNameFromIdNoCheck(id)
-	err := user.UpdateUserHash()
+	session := ormer.Engine.NewSession()
+	defer session.Close()
+	columns, err := prepareUserUpdate(session, user, columns)
 	if err != nil {
 		return 0, err
+	}
+	return updateUserInSession(session, id, user, columns)
+}
+
+func prepareUserUpdate(session *xorm.Session, user *User, columns []string) ([]string, error) {
+	if util.InSlice(columns, "updated_time") {
+		user.UpdatedTime = util.GetCurrentTime()
+	}
+	err := user.updateUserHash(session)
+	if err != nil {
+		return nil, err
 	}
 
 	// Ensure hash column is included in updates when columns are specified
 	if len(columns) > 0 && !util.InSlice(columns, "hash") {
 		columns = append(columns, "hash")
 	}
+	return columns, nil
+}
 
-	affected, err := ormer.Engine.ID(core.PK{owner, name}).Cols(columns...).Update(user)
+func updateUserInSession(session *xorm.Session, id string, user *User, columns []string) (int64, error) {
+	owner, name := util.GetOwnerAndNameFromIdNoCheck(id)
+	affected, err := session.ID(core.PK{owner, name}).Cols(columns...).Update(user)
 	if err != nil {
 		return 0, err
 	}
@@ -1568,7 +1604,22 @@ func GetUserInfo(user *User, scope string, aud string, host string) (*Userinfo, 
 }
 
 func LinkUserAccount(user *User, field string, value string) (bool, error) {
-	return SetUserField(user, field, value)
+	return mutateUser(user, func(session *xorm.Session, current *User) error {
+		table, err := session.Engine().TableInfo(current)
+		if err != nil {
+			return err
+		}
+		column := table.GetColumn(strings.ToLower(field))
+		if column == nil {
+			return fmt.Errorf("invalid provider field: %s", field)
+		}
+		target := reflect.ValueOf(current).Elem().FieldByName(column.FieldName)
+		if !target.IsValid() || target.Kind() != reflect.String || !target.CanSet() {
+			return fmt.Errorf("invalid provider field: %s", field)
+		}
+		target.SetString(value)
+		return nil
+	})
 }
 
 func LinkFlexibleCustomAccount(user *User, providerName string, providerId string) (bool, error) {

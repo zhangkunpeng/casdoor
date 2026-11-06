@@ -14,10 +14,14 @@
 
 package object
 
-import "fmt"
+import (
+	"fmt"
 
-func getDbSyncerForUser(user *User) (*Syncer, error) {
-	syncers, err := GetSyncers("admin")
+	"github.com/xorm-io/xorm"
+)
+
+func getDbSyncerForUser(user *User, query xorm.Interface) (*Syncer, error) {
+	syncers, err := getSyncers(query, "admin")
 	if err != nil {
 		return nil, err
 	}

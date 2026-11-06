@@ -22,6 +22,7 @@ import (
 	"github.com/casdoor/casdoor/i18n"
 	"github.com/casdoor/casdoor/util"
 	"github.com/xorm-io/core"
+	"github.com/xorm-io/xorm"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -78,8 +79,12 @@ func GetSyncerCount(owner, organization, field, value string) (int64, error) {
 }
 
 func GetSyncers(owner string) ([]*Syncer, error) {
+	return getSyncers(ormer.Engine, owner)
+}
+
+func getSyncers(query xorm.Interface, owner string) ([]*Syncer, error) {
 	syncers := []*Syncer{}
-	err := ormer.Engine.Desc("created_time").Find(&syncers, &Syncer{Owner: owner})
+	err := query.Desc("created_time").Find(&syncers, &Syncer{Owner: owner})
 	if err != nil {
 		return syncers, err
 	}
