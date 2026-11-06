@@ -780,6 +780,9 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 				UserPropertiesWechatUnionId: unionId,
 			},
 		}
+		if err = SetWechatUserIdentity(user, info); err != nil {
+			return nil, nil, err
+		}
 		_, err = AddUser(user, lang)
 		if err != nil {
 			return nil, nil, err

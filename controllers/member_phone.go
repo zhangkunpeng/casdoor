@@ -45,7 +45,7 @@ func (c *ApiController) MemberPhone() {
 		return
 	}
 	err := object.BindMemberPhone(application, user, c.Ctx.Input.Query("app_id"),
-		c.Ctx.Input.Query("operation_id"), c.Ctx.Input.Query("code"))
+		c.Ctx.Input.Query("code"))
 	if err != nil {
 		c.memberOperationError(err)
 		return
@@ -61,8 +61,6 @@ func (c *ApiController) memberOperationError(err error) {
 		c.memberError(http.StatusUnauthorized, "member_access_inactive")
 	case errors.Is(err, object.ErrMemberAppDenied):
 		c.memberError(http.StatusForbidden, "member_app_denied")
-	case errors.Is(err, object.ErrMemberConflict):
-		c.memberError(http.StatusConflict, "member_operation_conflict")
 	case errors.Is(err, object.ErrMemberInvalid):
 		c.memberError(http.StatusBadRequest, "invalid_member_operation")
 	default:

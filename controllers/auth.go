@@ -1334,7 +1334,10 @@ func (c *ApiController) Login() {
 					}
 
 					if provider.Type == "WeChat" {
-						user.WeChat = userInfo.Id
+						if err = object.SetWechatUserIdentity(user, userInfo); err != nil {
+							c.ResponseError(err.Error())
+							return
+						}
 					}
 					var affected bool
 					affected, err = object.AddUser(user, c.GetAcceptLanguage())

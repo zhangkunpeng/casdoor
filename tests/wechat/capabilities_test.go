@@ -173,17 +173,14 @@ func probeDatabase(t *testing.T) *sql.DB {
 	return db
 }
 
-func probeAccountCounts(t *testing.T, owner string) (int, int) {
+func probeAccountCount(t *testing.T, owner string) int {
 	t.Helper()
 	db := probeDatabase(t)
-	var users, links int
+	var users int
 	if err := db.QueryRow("SELECT COUNT(*) FROM `user` WHERE owner = ?", owner).Scan(&users); err != nil {
 		t.Fatal("account count read failed")
 	}
-	if err := db.QueryRow("SELECT COUNT(*) FROM wechat_identity WHERE owner = ?", owner).Scan(&links); err != nil {
-		t.Fatal("identity count read failed")
-	}
-	return users, links
+	return users
 }
 
 type processResult struct {
@@ -258,10 +255,10 @@ func TestWechatIndependentProcesses(t *testing.T) {
 	results := runProbeProcesses(t, app)
 	first := verifiedSubject(t, app, results[0].AccessToken)
 	second := verifiedSubject(t, app, results[1].AccessToken)
-	users, links := probeAccountCounts(t, owner)
-	if first != second || users != 1 || links != 2 {
-		t.Fatalf("concurrent account invariant failed: sameSubject=%t users=%d links=%d",
-			first == second, users, links)
+	users := probeAccountCount(t, owner)
+	if first != second || users != 1 {
+		t.Fatalf("concurrent account invariant failed: sameSubject=%t users=%d",
+			first == second, users)
 	}
 }
 
@@ -305,9 +302,9 @@ func TestWechatAppIDAndAccountIsolation(t *testing.T) {
 		app := createProbeApplication(t, owner, "mini", "app-a")
 		first := verifiedSubject(t, app, miniToken(t, app, "new-test-code").AccessToken)
 		second := verifiedSubject(t, app, miniToken(t, app, "different-wechat").AccessToken)
-		users, links := probeAccountCounts(t, owner)
-		if first == second || users != 2 || links != 4 {
-			t.Fatalf("different people merged: sameSubject=%t users=%d links=%d", first == second, users, links)
+		users := probeAccountCount(t, owner)
+		if first == second || users != 2 {
+			t.Fatalf("different people merged: sameSubject=%t users=%d", first == second, users)
 		}
 	})
 	t.Run("different-appid-without-union", func(t *testing.T) {
@@ -316,9 +313,9 @@ func TestWechatAppIDAndAccountIsolation(t *testing.T) {
 		b := createProbeApplication(t, owner, "b", "app-b")
 		first := verifiedSubject(t, a, miniToken(t, a, "no-union").AccessToken)
 		second := verifiedSubject(t, b, miniToken(t, b, "no-union").AccessToken)
-		users, links := probeAccountCounts(t, owner)
-		if first == second || users != 2 || links != 2 {
-			t.Fatalf("unrelated application identities merged: sameSubject=%t users=%d links=%d", first == second, users, links)
+		users := probeAccountCount(t, owner)
+		if first == second || users != 2 {
+			t.Fatalf("unrelated application identities merged: sameSubject=%t users=%d", first == second, users)
 		}
 	})
 	t.Run("rename-keeps-wechat-login-subject", func(t *testing.T) {

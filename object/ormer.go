@@ -338,15 +338,7 @@ func (a *Ormer) createTable() {
 	showSql := conf.GetConfigBool("showSql")
 	a.Engine.ShowSQL(showSql)
 
-	err := a.Engine.Sync2(new(WechatIdentity))
-	if err != nil {
-		panic(err)
-	}
-	err = a.Engine.Sync2(new(MemberPhoneOperation))
-	if err != nil {
-		panic(err)
-	}
-	err = a.Engine.Sync2(new(Organization))
+	err := a.Engine.Sync2(new(Organization))
 	if err != nil {
 		panic(err)
 	}
@@ -422,10 +414,6 @@ func (a *Ormer) createTable() {
 	}
 
 	err = a.Engine.Sync2(new(Token))
-	if err != nil {
-		panic(err)
-	}
-	err = a.Engine.Sync2(new(UserSubject))
 	if err != nil {
 		panic(err)
 	}

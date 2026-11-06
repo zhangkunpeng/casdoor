@@ -34,6 +34,9 @@ func (r phoneTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, fmt.Errorf("invalid phone authorization request")
 	}
 	body := `{"errcode":0,"phone_info":{"purePhoneNumber":"13800000000","countryCode":"86"}}`
+	if request.Code == "retryable-phone-code" || request.Code == "fresh-phone-code" {
+		body = `{"errcode":0,"phone_info":{"purePhoneNumber":"13800111111","countryCode":"86"}}`
+	}
 	if _, loaded := r.used.LoadOrStore(request.Code, true); loaded {
 		body = `{"errcode":40029}`
 	}
@@ -79,28 +82,22 @@ func TestWechatMemberPhone(t *testing.T) {
 	server := httptest.NewServer(web.BeeApp.Handlers)
 	defer server.Close()
 	values := url.Values{"access_token": {session.AccessToken}, "app_id": {"phone-mini"},
-		"operation_id": {"phone-operation-1"}, "code": {"trusted-phone-code"}}
+		"code": {"trusted-phone-code"}}
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusOK {
 		t.Fatalf("trusted phone binding failed: status=%d", status)
 	}
 	user, err := object.GetUserByUserId(app.Organization, subject)
-	if err != nil || user == nil || user.Phone != "13800000000" || user.CountryCode != "86" {
+	if err != nil || user == nil || user.Phone != "13800000000" || user.CountryCode != "CN" {
 		t.Fatal("trusted phone not persisted on the authenticated Casdoor subject")
 	}
-	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusOK {
-		t.Fatal("duplicate trusted phone operation rejected")
+	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusServiceUnavailable {
+		t.Fatal("consumed authorization code was treated as a recoverable operation")
 	}
-	values.Set("code", "changed-code")
-	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusConflict {
-		t.Fatal("operation accepted different authorization data")
-	}
-	values.Set("operation_id", "phone-operation-id-token")
 	values.Set("access_token", session.IdToken)
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusUnauthorized {
 		t.Fatal("ID token authorized phone mutation")
 	}
 	values.Set("access_token", session.AccessToken)
-	values.Set("operation_id", "phone-operation-failure")
 	values.Set("code", "retryable-phone-code")
 	db := probeDatabase(t)
 	if _, err := db.Exec("CREATE TRIGGER xueda_phone_failure BEFORE UPDATE ON `user` FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'injected phone write failure'"); err != nil {
@@ -110,16 +107,27 @@ func TestWechatMemberPhone(t *testing.T) {
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusServiceUnavailable {
 		t.Fatal("phone persistence failure reported success")
 	}
+	user, err = object.GetUserByUserId(app.Organization, subject)
+	if err != nil || user == nil || user.Phone != "13800000000" {
+		t.Fatal("failed phone transaction changed the current profile")
+	}
 	if _, err := db.Exec("DROP TRIGGER xueda_phone_failure"); err != nil {
 		t.Fatal("phone failure trigger cleanup failed")
 	}
+	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusServiceUnavailable {
+		t.Fatal("failed write retained the consumed phone authorization")
+	}
+	values.Set("code", "fresh-phone-code")
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusOK {
-		t.Fatal("trusted proof did not recover phone write without consuming the code again")
+		t.Fatal("fresh phone authorization did not recover the failed write")
 	}
-	if calls.Load() != 2 {
-		t.Fatal("duplicate or retry consumed the one-use phone code again")
+	user, err = object.GetUserByUserId(app.Organization, subject)
+	if err != nil || user == nil || user.Phone != "13800111111" || user.CountryCode != "CN" {
+		t.Fatal("freshly authorized phone not persisted")
 	}
-	values.Set("operation_id", "phone-operation-banned")
+	if calls.Load() != 5 {
+		t.Fatal("phone authorization requests did not follow native one-use verification")
+	}
 	user.IsForbidden = true
 	if _, err := object.UpdateUser(user.GetId(), user, []string{"is_forbidden"}, true); err != nil {
 		t.Fatal("member disable failed")
@@ -127,7 +135,7 @@ func TestWechatMemberPhone(t *testing.T) {
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusUnauthorized {
 		t.Fatal("disabled subject mutated phone")
 	}
-	users, _ := probeAccountCounts(t, app.Organization)
+	users := probeAccountCount(t, app.Organization)
 	if users != 1 {
 		t.Fatal("phone binding created a second account")
 	}

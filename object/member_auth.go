@@ -12,7 +12,6 @@ import (
 var (
 	ErrMemberUnauthenticated = errors.New("member access token is inactive")
 	ErrMemberAppDenied       = errors.New("member application is not allowed")
-	ErrMemberConflict        = errors.New("member operation conflict")
 	ErrMemberInvalid         = errors.New("invalid member operation")
 )
 

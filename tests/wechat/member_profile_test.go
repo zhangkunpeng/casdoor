@@ -155,7 +155,7 @@ func TestWechatMemberProfile(t *testing.T) {
 	if update(session.AccessToken) {
 		t.Fatal("disabled subject mutated profile")
 	}
-	users, _ := probeAccountCounts(t, app.Organization)
+	users := probeAccountCount(t, app.Organization)
 	if users != 2 {
 		t.Fatal("profile update created another account")
 	}

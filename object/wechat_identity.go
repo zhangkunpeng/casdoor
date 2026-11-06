@@ -1,61 +1,12 @@
 package object
 
 import (
-	"context"
-	"crypto/sha256"
-	"database/sql/driver"
-	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/casdoor/casdoor/idp"
 )
-
-type WechatIdentity struct {
-	Owner  string `xorm:"varchar(100) pk"`
-	Key    string `xorm:"varchar(64) pk"`
-	UserId string `xorm:"varchar(255) notnull"`
-	AppId  string `xorm:"varchar(100)"`
-	OpenId string `xorm:"varchar(255)"`
-}
-
-// LockWechatOrganization serializes all WeChat registration paths across processes on the shared MySQL database.
-func LockWechatOrganization(owner string) (func(), error) {
-	return lockCasdoorResource("wechat:" + owner)
-}
-
-func lockCasdoorResource(resource string) (func(), error) {
-	if ormer.driverName != "mysql" {
-		return nil, fmt.Errorf("WeChat registration locking requires MySQL")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
-	conn, err := ormer.Engine.DB().DB.Conn(ctx)
-	if err != nil {
-		return nil, err
-	}
-	hash := sha256.Sum256([]byte(ormer.dbName + ":" + resource))
-	key := hex.EncodeToString(hash[:])
-	var acquired int
-	if err = conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 30)", key).Scan(&acquired); err != nil || acquired != 1 {
-		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
-		conn.Close()
-		if err != nil {
-			return nil, fmt.Errorf("acquire WeChat registration lock: %w", err)
-		}
-		return nil, fmt.Errorf("WeChat registration lock timed out")
-	}
-	return func() {
-		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer releaseCancel()
-		var released int
-		if err := conn.QueryRowContext(releaseCtx, "SELECT RELEASE_LOCK(?)", key).Scan(&released); err != nil || released != 1 {
-			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
-		}
-		_ = conn.Close()
-	}, nil
-}
 
 func wechatAppIdentity(info *idp.UserInfo) (string, string, error) {
 	var appID, openID string
@@ -73,125 +24,94 @@ func wechatAppIdentity(info *idp.UserInfo) (string, string, error) {
 	return appID, openID, nil
 }
 
-func wechatIdentityKeys(info *idp.UserInfo) ([]string, error) {
-	appID, openID, err := wechatAppIdentity(info)
-	if err != nil {
-		return nil, err
+func nativeWechatBindings(user *User) (map[string]string, error) {
+	bindings := map[string]string{}
+	if extra := user.Properties["oauth_WeChat_extra"]; extra != "" {
+		if err := json.Unmarshal([]byte(extra), &bindings); err != nil {
+			return nil, fmt.Errorf("decode native WeChat bindings: %w", err)
+		}
 	}
-	keys := []string{idp.BuildWechatOpenIdKey(appID) + ":" + openID}
-	if union := info.Extra["wechat_unionid"]; union != "" {
-		keys = append(keys, "union:"+union)
+	if bindings == nil {
+		return nil, fmt.Errorf("invalid native WeChat bindings")
 	}
-	for i, key := range keys {
-		hash := sha256.Sum256([]byte(key))
-		keys[i] = hex.EncodeToString(hash[:])
-	}
-	return keys, nil
+	return bindings, nil
 }
 
 func FindWechatUser(owner string, info *idp.UserInfo) (*User, error) {
-	keys, err := wechatIdentityKeys(info)
+	appID, openID, err := wechatAppIdentity(info)
 	if err != nil {
 		return nil, err
 	}
-	var found *User
-	for _, key := range keys {
-		link := WechatIdentity{Owner: owner, Key: key}
-		exists, err := ormer.Engine.Get(&link)
+	openBinding, err := json.Marshal(map[string]string{idp.BuildWechatOpenIdKey(appID): openID})
+	if err != nil {
+		return nil, err
+	}
+	// MySQL JSON string comparisons preserve the case of both AppID and OpenID.
+	extra := "JSON_UNQUOTE(JSON_EXTRACT(NULLIF(properties, ''), '$.oauth_WeChat_extra'))"
+	predicate := "BINARY wechat = ? OR JSON_CONTAINS(" + extra + ", ?) = 1"
+	args := []interface{}{owner, info.Id, string(openBinding)}
+	if union := info.Extra["wechat_unionid"]; union != "" {
+		unionBinding, err := json.Marshal(map[string]string{"wechat_unionid": union})
 		if err != nil {
 			return nil, err
 		}
-		if !exists {
-			continue
-		}
-		user, err := GetUserByUserId(owner, link.UserId)
-		if err != nil {
-			return nil, err
-		}
-		if user == nil {
-			return nil, fmt.Errorf("WeChat identity points to missing user")
-		}
-		if found != nil && found.Id != user.Id {
-			return nil, fmt.Errorf("WeChat identity conflict")
-		}
-		found = user
+		predicate += " OR JSON_CONTAINS(" + extra + ", ?) = 1"
+		args = append(args, string(unionBinding))
 	}
 	var matches []*User
-	err = ormer.Engine.Where("owner = ? AND BINARY wechat = ?", owner, info.Id).Find(&matches)
+	if err := ormer.Engine.Where("BINARY owner = ? AND ("+predicate+")", args...).Find(&matches); err != nil {
+		return nil, fmt.Errorf("find native WeChat identity: %w", err)
+	}
 	if len(matches) > 1 {
-		return nil, fmt.Errorf("ambiguous WeChat identity")
+		return nil, fmt.Errorf("WeChat identity conflict")
 	}
-	var canonical *User
-	if len(matches) == 1 {
-		canonical = matches[0]
+	if len(matches) == 0 {
+		return nil, nil
 	}
+	user := matches[0]
+	bindings, err := nativeWechatBindings(user)
 	if err != nil {
 		return nil, err
 	}
-	if canonical != nil {
-		if found != nil && canonical.Id != found.Id {
-			return nil, fmt.Errorf("WeChat identity conflict")
-		}
-		found = canonical
+	if union := info.Extra["wechat_unionid"]; union != "" &&
+		bindings["wechat_unionid"] != "" && bindings["wechat_unionid"] != union {
+		return nil, fmt.Errorf("WeChat UnionID conflict")
 	}
-	if found != nil && info.Extra["wechat_unionid"] != "" {
-		old := found.Properties[UserPropertiesWechatUnionId]
-		if old != "" && old != info.Extra["wechat_unionid"] {
-			return nil, fmt.Errorf("WeChat UnionID conflict")
-		}
-	}
-	return found, nil
+	return user, nil
 }
 
-func bindWechatIdentity(user *User, info *idp.UserInfo) error {
-	keys, err := wechatIdentityKeys(info)
-	if err != nil {
-		return err
-	}
+func SetWechatUserIdentity(user *User, info *idp.UserInfo) error {
 	appID, openID, err := wechatAppIdentity(info)
 	if err != nil {
 		return err
 	}
-	session := ormer.Engine.NewSession()
-	defer session.Close()
-	if err = session.Begin(); err != nil {
+	found, err := FindWechatUser(user.Owner, info)
+	if err != nil {
 		return err
 	}
-	for index, key := range keys {
-		link := WechatIdentity{Owner: user.Owner, Key: key}
-		exists, err := session.Get(&link)
-		if err != nil {
-			return err
-		}
-		if exists && link.UserId != user.Id {
-			return fmt.Errorf("WeChat identity already belongs to another user")
-		}
-		if !exists {
-			link.UserId = user.Id
-			if index == 0 {
-				link.AppId, link.OpenId = appID, openID
-			}
-			if _, err = session.Insert(&link); err != nil {
-				return err
-			}
-		} else if index == 0 {
-			link.AppId, link.OpenId = appID, openID
-			if _, err = session.Where("owner = ? AND "+quoteColumn("key")+" = ?", link.Owner, link.Key).
-				Cols("app_id", "open_id").Update(&link); err != nil {
-				return err
-			}
-		}
+	if found != nil && found.Name != user.Name {
+		return fmt.Errorf("WeChat identity already belongs to another user")
 	}
-	if err = session.Commit(); err != nil {
+	bindings, err := nativeWechatBindings(user)
+	if err != nil {
 		return err
 	}
-	if user.Properties == nil {
-		user.Properties = map[string]string{}
-	}
+	bindings[idp.BuildWechatOpenIdKey(appID)] = openID
 	if union := info.Extra["wechat_unionid"]; union != "" {
+		if old := bindings["wechat_unionid"]; old != "" && old != union {
+			return fmt.Errorf("WeChat UnionID conflict")
+		}
+		bindings["wechat_unionid"] = union
+	}
+	extra, err := json.Marshal(bindings)
+	if err != nil {
+		return fmt.Errorf("encode native WeChat bindings: %w", err)
+	}
+	setUserProperty(user, "oauth_WeChat_extra", string(extra))
+	if union := bindings["wechat_unionid"]; union != "" {
 		user.WeChat = union
-		user.Properties[UserPropertiesWechatUnionId] = union
-	} else if user.WeChat == "" {
+		setUserProperty(user, UserPropertiesWechatUnionId, union)
+	} else {
 		user.WeChat = info.Id
 	}
 	return nil

@@ -345,7 +345,7 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 	}
 
 	if providerType == "WeChat" {
-		if err := bindWechatIdentity(user, userInfo); err != nil {
+		if err := SetWechatUserIdentity(user, userInfo); err != nil {
 			return false, err
 		}
 	}
@@ -430,6 +430,9 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 			}
 		}
 		for k, v := range userInfo.Extra {
+			if providerType == "WeChat" && k == "wechat_unionid" && v == "" {
+				continue
+			}
 			extra[k] = v
 		}
 

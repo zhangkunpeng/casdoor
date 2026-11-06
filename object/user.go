@@ -61,13 +61,13 @@ func InitUserManager() {
 }
 
 type User struct {
-	Owner       string `xorm:"varchar(100) notnull pk" json:"owner"`
+	Owner       string `xorm:"varchar(100) notnull pk unique(subject)" json:"owner"`
 	Name        string `xorm:"varchar(255) notnull pk" json:"name"`
 	CreatedTime string `xorm:"varchar(100) index" json:"createdTime"`
 	UpdatedTime string `xorm:"varchar(100)" json:"updatedTime"`
 	DeletedTime string `xorm:"varchar(100)" json:"deletedTime"`
 
-	Id                   string     `xorm:"varchar(255) index" json:"id"`
+	Id                   string     `xorm:"varbinary(255) index unique(subject)" json:"id"`
 	ExternalId           string     `xorm:"varchar(100) index" json:"externalId"`
 	Type                 string     `xorm:"varchar(100)" json:"type"`
 	Password             string     `xorm:"varchar(150)" json:"password"`
@@ -1123,6 +1123,9 @@ func AddUser(user *User, lang string) (bool, error) {
 	if user.Owner == "" || user.Name == "" {
 		return false, errors.New(i18n.Translate(lang, "user:the user's owner and name should not be empty"))
 	}
+	if err := validateUserSubject(user.Id); err != nil {
+		return false, err
+	}
 
 	user.Groups = getOrganizationGroups(user.Owner, user.Groups)
 
@@ -1220,7 +1223,7 @@ func AddUser(user *User, lang string) (bool, error) {
 		user.Name = strings.ToLower(user.Name)
 	}
 
-	affected, err := insertSubjectUsers([]*User{user})
+	affected, err := ormer.Engine.Insert(user)
 	if err != nil {
 		return false, err
 	}
@@ -1237,6 +1240,9 @@ func AddUsers(users []*User) (bool, error) {
 
 	// organization := GetOrganizationByUser(users[0])
 	for _, user := range users {
+		if err := validateUserSubject(user.Id); err != nil {
+			return false, err
+		}
 		// this function is only used for syncer or batch upload, so no need to encrypt the password
 		// user.UpdateUserPassword(organization)
 
@@ -1273,7 +1279,7 @@ func AddUsers(users []*User) (bool, error) {
 		}
 	}
 
-	affected, err := insertSubjectUsers(users)
+	affected, err := ormer.Engine.Insert(users)
 	if err != nil {
 		return false, err
 	}
@@ -1309,7 +1315,7 @@ func AddUsersInBatch(users []*User) (bool, error) {
 }
 
 func deleteUser(user *User) (bool, error) {
-	affected, err := deleteSubjectUser(user)
+	affected, err := ormer.Engine.ID(core.PK{user.Owner, user.Name}).Delete(&User{})
 	if err != nil {
 		return false, err
 	}
