@@ -564,7 +564,7 @@ func (c *ApiController) RevokeToken() {
 
 	tokenError, err := object.RevokeToken(application, clientSecret, tokenValue, tokenTypeHint)
 	if err != nil {
-		c.ResponseTokenError(object.EndpointError, "token revocation unavailable")
+		c.ResponseError(err.Error())
 		return
 	}
 	if tokenError != nil {

@@ -13,7 +13,9 @@ go vet ./tests/wechat ./controllers ./object ./idp
 go build .
 ```
 
-未注入 DSN 时依赖数据库的测试会 Skip；必须检查实际通过数和 Skip，不能将退出码为零当作集成验收。`TestWechatProcessHelper` 只在父测试启动的子进程中执行，常规全套调用会单独 Skip 此入口。`TestWechatIndependentProcesses` 启动两个独立进程共享该数据库，验证首次建号锁、最终账号和关联记录；其他回归覆盖注册顺序、UnionID 补齐与冲突、逐 AppID 查询、JWT-Custom、手机号、资料、人脸版本、封禁、刷新和应用级撤销。
+未注入 DSN 时依赖数据库的测试会 Skip；必须检查实际通过数和 Skip，不能将退出码为零当作集成验收。`TestWechatProcessHelper` 只在父测试启动的子进程中执行，常规全套调用会单独 Skip 此入口。`TestWechatIndependentProcesses` 启动两个独立进程共享该数据库，验证首次建号锁、最终账号和关联记录；其他回归覆盖注册顺序、UnionID 补齐与冲突、逐 AppID 查询、JWT-Custom、手机号、资料、人脸版本、封禁及原生刷新与撤销。
+
+刷新与撤销生产实现与官方 v4.26.0 一致。开启轮换时删除父令牌；用已删除父令牌撤销不会影响后继，须提交当前令牌。禁用轮换时保留并复用同一刷新令牌，原生撤销会使共享该刷新令牌摘要的 Token 一起失效。回归仅验证这些原生边界，不要求服务端原子轮换、并发单次消费或会话家族撤销。原生撤销数据库错误返回 HTTP 200 的 `status:error`，消费方需识别响应体中的失败。
 
 ## 跨服务互操作
 
@@ -31,6 +33,6 @@ Device 只消费 Xueda 提供的通用取图 URL，不持有 Casdoor 凭据，�
 
 OpenID 使用原生 `get-user?owner=<组织>&userId=<主体>` 返回的 `properties.oauth_WeChat_extra` JSON 字符串，按固定 AppID 解析 `wechat_openid_<AppID>`；不使用通用微信 ID 或其他应用的值。微信登录沿用原生属性合并与持久化，回归验证多 AppID 保留、本人修改拒绝与字段过滤。组织的 Properties 必须只允许管理员修改，且服务端查询身份有权查看；属性被过滤时不得回退其他来源。
 
-扩展入口的 scope 检查只约束这两个接口。原生 OAuth 沿用自己的 scope 校验；普通 Application 的 Basic 凭据在原生 API 上仍具有本组织管理权限，不能将其宣称为只读或全局最小授权。生产凭据必须只保存在服务端。
+扩展入口的 scope 检查只约束 `member-phone`。原生 OAuth 沿用自己的 scope 校验；普通 Application 的 Basic 凭据在原生 API 上仍具有本组织管理权限，不能将其宣称为只读或全局最小授权。生产凭据必须只保存在服务端。
 
 测试结束后停止本轮子进程和隔离容器，移除其独立卷及受保护的临时凭据。只保留脱敏结论、测试方法和代码提交，不提交完整 JWT、Provider Secret、二维码票据、手机号、人脸图片或原始日志。

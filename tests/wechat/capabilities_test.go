@@ -187,21 +187,13 @@ func probeAccountCounts(t *testing.T, owner string) (int, int) {
 }
 
 type processResult struct {
-	AccessToken     string
-	RefreshRejected bool
+	AccessToken string
 }
 
-func runProbeProcesses(t *testing.T, app *object.Application, refreshToken string) []processResult {
+func runProbeProcesses(t *testing.T, app *object.Application) []processResult {
 	t.Helper()
 	resultDir := t.TempDir()
 	ready := filepath.Join(resultDir, "start")
-	refreshPath := ""
-	if refreshToken != "" {
-		refreshPath = filepath.Join(resultDir, "refresh")
-		if err := os.WriteFile(refreshPath, []byte(refreshToken), 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for i := 0; i < 2; i++ {
@@ -212,8 +204,7 @@ func runProbeProcesses(t *testing.T, app *object.Application, refreshToken strin
 			cmd.Dir = filepath.Join(probeRoot(), "tests/wechat")
 			cmd.Env = append(os.Environ(), "XUEDA_PROBE_APP="+app.GetId(),
 				"XUEDA_PROBE_BARRIER="+ready, "XUEDA_PROBE_RESULT="+filepath.Join(resultDir, fmt.Sprint(index)),
-				"XUEDA_PROBE_READY="+filepath.Join(resultDir, fmt.Sprintf("ready-%d", index)),
-				"XUEDA_PROBE_REFRESH_PATH="+refreshPath)
+				"XUEDA_PROBE_READY="+filepath.Join(resultDir, fmt.Sprintf("ready-%d", index)))
 			if output, err := cmd.CombinedOutput(); err != nil {
 				for _, line := range strings.Split(string(output), "\n") {
 					if strings.Contains(line, "capabilities_test.go:") || strings.HasPrefix(line, "panic:") {
@@ -264,7 +255,7 @@ func TestWechatIndependentProcesses(t *testing.T) {
 	initializeProbe(t, true)
 	owner := fmt.Sprintf("wx-process-%d", time.Now().UnixNano())
 	app := createProbeApplication(t, owner, "mini", "process-mini")
-	results := runProbeProcesses(t, app, "")
+	results := runProbeProcesses(t, app)
 	first := verifiedSubject(t, app, results[0].AccessToken)
 	second := verifiedSubject(t, app, results[1].AccessToken)
 	users, links := probeAccountCounts(t, owner)
@@ -297,31 +288,7 @@ func TestWechatProcessHelper(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	var result processResult
-	if refreshPath := os.Getenv("XUEDA_PROBE_REFRESH_PATH"); refreshPath != "" {
-		raw, err := os.ReadFile(refreshPath)
-		if err != nil {
-			t.Fatal("protected refresh input unavailable")
-		}
-		response, err := object.RefreshToken(app, "refresh_token", string(raw), "",
-			app.ClientId, app.ClientSecret, "", "127.0.0.1:8000", "", "")
-		if err != nil {
-			t.Fatal("independent refresh dependency failure")
-		}
-		switch value := response.(type) {
-		case *object.TokenWrapper:
-			result.AccessToken = value.AccessToken
-		case *object.TokenError:
-			if value.Error != object.InvalidGrant {
-				t.Fatal("unexpected independent refresh rejection")
-			}
-			result.RefreshRejected = true
-		default:
-			t.Fatal("unexpected independent refresh result")
-		}
-	} else {
-		result.AccessToken = miniToken(t, app, "new-test-code").AccessToken
-	}
+	result := processResult{AccessToken: miniToken(t, app, "new-test-code").AccessToken}
 	content, err := json.Marshal(result)
 	if err != nil {
 		t.Fatal(err)

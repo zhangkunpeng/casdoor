@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -79,6 +78,13 @@ func TestWechatApplicationRevocation(t *testing.T) {
 	if err != nil {
 		t.Fatal("initial refresh failed")
 	}
+	parent, err := object.GetTokenByAccessToken(original.AccessToken)
+	if err != nil || parent != nil {
+		t.Fatal("native rotation must delete the parent token")
+	}
+	if _, err := refreshProbe(a, original.RefreshToken); err == nil {
+		t.Fatal("deleted parent refresh accepted")
+	}
 	if !introspectionActive(t, server.URL, a, successor.AccessToken) ||
 		!introspectionActive(t, server.URL, b, other.AccessToken) {
 		t.Fatal("fresh sessions were inactive")
@@ -88,17 +94,21 @@ func TestWechatApplicationRevocation(t *testing.T) {
 		if status != http.StatusOK {
 			t.Fatalf("application revocation endpoint failed: status=%d", status)
 		}
-		if introspectionActive(t, server.URL, a, successor.AccessToken) {
-			t.Fatal("revoked successor remained active")
+		if !introspectionActive(t, server.URL, a, successor.AccessToken) {
+			t.Fatal("revoking a deleted parent invalidated the successor")
 		}
 		if !introspectionActive(t, server.URL, b, other.AccessToken) {
 			t.Fatal("application logout revoked another application")
 		}
 	}
+	status, _ := oauthRequest(t, server.URL, a, "/api/login/oauth/revoke", successor.RefreshToken, "refresh_token")
+	if status != http.StatusOK || introspectionActive(t, server.URL, a, successor.AccessToken) {
+		t.Fatal("revoking the current token did not invalidate it")
+	}
 	if _, err := refreshProbe(a, successor.RefreshToken); err == nil {
 		t.Fatal("revoked successor refresh accepted")
 	}
-	status, _ := oauthRequest(t, server.URL, a, "/api/login/oauth/revoke", other.AccessToken, "access_token")
+	status, _ = oauthRequest(t, server.URL, a, "/api/login/oauth/revoke", other.AccessToken, "access_token")
 	if status != http.StatusOK || !introspectionActive(t, server.URL, b, other.AccessToken) {
 		t.Fatal("client revoked a token belonging to another application")
 	}
@@ -106,129 +116,37 @@ func TestWechatApplicationRevocation(t *testing.T) {
 
 func TestWechatRefreshSession(t *testing.T) {
 	initializeProbe(t, true)
-	t.Run("successor-persistence-failure-and-retry", func(t *testing.T) {
-		owner := fmt.Sprintf("wx-rollback-%d", time.Now().UnixNano())
-		app := createProbeApplication(t, owner, "mini", "rollback-mini")
+	t.Run("rotation-disabled-revokes-shared-refresh-tokens", func(t *testing.T) {
+		owner := fmt.Sprintf("wx-no-rotation-%d", time.Now().UnixNano())
+		app := createProbeApplication(t, owner, "mini", "no-rotation-mini")
+		app.DisableRefreshRotation = true
 		original := miniToken(t, app, "new-test-code")
-		db := probeDatabase(t)
-		trigger := "xueda_refresh_failure"
-		statement := fmt.Sprintf("CREATE TRIGGER %s BEFORE INSERT ON token FOR EACH ROW "+
-			"BEGIN IF NEW.organization = '%s' THEN SIGNAL SQLSTATE '45000' "+
-			"SET MESSAGE_TEXT = 'isolated refresh fault'; END IF; END", trigger, owner)
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal("install isolated refresh fault failed")
-		}
-		t.Cleanup(func() { _, _ = db.Exec("DROP TRIGGER IF EXISTS " + trigger) })
-		if _, err := refreshProbe(app, original.RefreshToken); err == nil {
-			t.Fatal("refresh ignored successor persistence failure")
-		}
-		persisted, err := object.GetTokenByAccessToken(original.AccessToken)
-		if err != nil || persisted == nil || persisted.ExpiresIn <= 0 {
-			t.Fatal("failed rotation did not roll back parent retirement")
-		}
-		if _, err := db.Exec("DROP TRIGGER " + trigger); err != nil {
-			t.Fatal("remove isolated refresh fault failed")
-		}
-		if _, err := refreshProbe(app, original.RefreshToken); err != nil {
-			t.Fatal("refresh retry failed after rollback")
-		}
-	})
-	t.Run("two-independent-processes", func(t *testing.T) {
-		owner := fmt.Sprintf("wx-process-rotation-%d", time.Now().UnixNano())
-		app := createProbeApplication(t, owner, "mini", "process-rotation-mini")
-		original := miniToken(t, app, "new-test-code")
-		successes, rejected := 0, 0
-		for _, result := range runProbeProcesses(t, app, original.RefreshToken) {
-			if result.RefreshRejected {
-				rejected++
-			} else {
-				successes++
-				if verifiedSubject(t, app, result.AccessToken) != verifiedSubject(t, app, original.AccessToken) {
-					t.Fatal("cross-process rotation changed subject")
-				}
-			}
-		}
-		if successes != 1 || rejected != 1 {
-			t.Fatalf("cross-process rotation failed: successes=%d rejected=%d", successes, rejected)
-		}
-	})
-	t.Run("single-use-concurrent-rotation", func(t *testing.T) {
-		owner := fmt.Sprintf("wx-rotation-%d", time.Now().UnixNano())
-		app := createProbeApplication(t, owner, "mini", "rotation-mini")
-		original := miniToken(t, app, "new-test-code")
-		start := make(chan struct{})
-		results := make(chan *object.TokenWrapper, 8)
-		var wg sync.WaitGroup
-		for i := 0; i < cap(results); i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				<-start
-				result, err := refreshProbe(app, original.RefreshToken)
-				if err == nil {
-					results <- result
-				}
-			}()
-		}
-		close(start)
-		wg.Wait()
-		close(results)
-		var successor *object.TokenWrapper
-		successes := 0
-		for result := range results {
-			successor = result
-			successes++
-		}
-		if successes != 1 {
-			t.Fatalf("refresh token consumed more than once: successes=%d", successes)
+		successor, err := refreshProbe(app, original.RefreshToken)
+		if err != nil {
+			t.Fatal("non-rotating refresh failed")
 		}
 		if verifiedSubject(t, app, original.AccessToken) != verifiedSubject(t, app, successor.AccessToken) {
-			t.Fatal("rotation changed subject")
+			t.Fatal("refresh changed subject")
 		}
-		if _, err := refreshProbe(app, original.RefreshToken); err == nil {
-			t.Fatal("used refresh token accepted again")
+		if successor.RefreshToken != original.RefreshToken {
+			t.Fatal("non-rotating refresh must preserve the shared refresh token")
 		}
-		old, err := object.GetTokenByAccessToken(original.AccessToken)
-		if err != nil || old == nil || old.ExpiresIn > 0 {
-			t.Fatal("rotation did not persist retired access token")
+		if _, err := refreshProbe(app, original.RefreshToken); err != nil {
+			t.Fatal("non-rotating parent could not be reused")
+		}
+		if tokenError, err := object.RevokeToken(app, app.ClientSecret, original.RefreshToken, "refresh_token"); err != nil || tokenError != nil {
+			t.Fatal("parent revocation failed")
+		}
+		parent, err := object.GetTokenByAccessToken(original.AccessToken)
+		if err != nil || parent == nil || parent.ExpiresIn > 0 {
+			t.Fatal("revocation did not expire the parent")
 		}
 		current, err := object.GetTokenByAccessToken(successor.AccessToken)
-		if err != nil || current == nil || current.ExpiresIn <= 0 {
-			t.Fatal("rotation did not persist active successor")
+		if err != nil || current == nil || current.ExpiresIn > 0 {
+			t.Fatal("native revocation must expire tokens sharing the refresh token")
+		}
+		if _, err := refreshProbe(app, successor.RefreshToken); err == nil {
+			t.Fatal("revoked shared refresh token accepted")
 		}
 	})
-}
-
-func TestWechatRefreshRevocationRace(t *testing.T) {
-	initializeProbe(t, true)
-	for i := 0; i < 4; i++ {
-		owner := fmt.Sprintf("wx-race-%d-%d", time.Now().UnixNano(), i)
-		app := createProbeApplication(t, owner, "mini", "race-mini")
-		original := miniToken(t, app, "new-test-code")
-		start := make(chan struct{})
-		done := make(chan struct{})
-		var successor *object.TokenWrapper
-		go func() {
-			<-start
-			successor, _ = refreshProbe(app, original.RefreshToken)
-			close(done)
-		}()
-		close(start)
-		firstTokenError, firstErr := object.RevokeToken(app, app.ClientSecret, original.RefreshToken, "refresh_token")
-		<-done
-		if firstErr != nil || firstTokenError != nil {
-			if tokenError, err := object.RevokeToken(app, app.ClientSecret, original.RefreshToken, "refresh_token"); err != nil || tokenError != nil {
-				t.Fatal("revocation retry failed")
-			}
-		}
-		if successor != nil {
-			current, err := object.GetTokenByAccessToken(successor.AccessToken)
-			if err != nil || current == nil || current.ExpiresIn > 0 {
-				t.Fatal("refresh escaped concurrent revocation")
-			}
-			if _, err := refreshProbe(app, successor.RefreshToken); err == nil {
-				t.Fatal("revoked family created another successor")
-			}
-		}
-	}
 }

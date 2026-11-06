@@ -174,9 +174,10 @@ func TestXuedaMemberHTTPInterop(t *testing.T) {
 			"XUEDA_CASDOOR_HTTP_FIXTURE="+filepath.Join(directory, "fixture.json"))
 		output, err := command.CombinedOutput()
 		if err != nil {
+			t.Logf("Xueda integration subprocess: %v", err)
 			for _, line := range strings.Split(string(output), "\n") {
-				if strings.Contains(line, "casdoor_member_integration_test.go:") || strings.HasPrefix(line, "panic:") ||
-					strings.Contains(line, "undefined:") {
+				if strings.Contains(line, "_test.go:") || strings.HasPrefix(line, "panic:") ||
+					strings.Contains(line, "undefined:") || strings.Contains(line, "no space left on device") {
 					t.Log(line)
 				}
 			}
