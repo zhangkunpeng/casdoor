@@ -107,7 +107,7 @@ func TestXuedaMemberHTTPInterop(t *testing.T) {
 	}
 	t.Cleanup(func() { object.DeleteProvider(storageProvider) })
 	app.Providers = append(app.Providers, &object.ProviderItem{Name: storageProvider.Name, Provider: storageProvider})
-	app.MemberApiScopes = []string{"wechat:read", "phone:write"}
+	app.Scopes = []*object.ScopeItem{{Name: "wechat:read"}, {Name: "phone:write"}}
 	if _, err := object.UpdateApplication(app.GetId(), app, true, "en", nil); err != nil {
 		t.Fatal("interop application scopes update failed")
 	}

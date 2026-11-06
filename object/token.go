@@ -52,7 +52,6 @@ type Token struct {
 	DPoPJkt          string `xorm:"varchar(255) 'dpop_jkt'" json:"dPoPJkt"` // RFC 9449 DPoP JWK thumbprint binding
 	SessionId        string `xorm:"varchar(100) index" json:"sessionId"`    // the Beego session id that minted the token
 	FamilyId         string `xorm:"varchar(100) index" json:"familyId"`
-	RefreshUsed      bool   `json:"refreshUsed"`
 }
 
 func GetTokenCount(owner, organization, field, value string) (int64, error) {

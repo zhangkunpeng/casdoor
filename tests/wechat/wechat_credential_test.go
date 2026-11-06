@@ -40,7 +40,7 @@ func TestWechatApplicationCredential(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = base })
 	appID := fmt.Sprintf("credential-%d", time.Now().UnixNano())
 	app := createProbeApplication(t, appID, "mini", appID)
-	app.MemberApiScopes = []string{"wechat:credential"}
+	app.Scopes = []*object.ScopeItem{{Name: "wechat:credential"}}
 	if _, err := object.UpdateApplication(app.GetId(), app, true, "en", nil); err != nil {
 		t.Fatal("credential scopes update failed")
 	}

@@ -16,9 +16,8 @@ var ErrUserSubjectImmutable = errors.New("user subject is immutable")
 var ErrUserSubjectReserved = errors.New("user subject was already assigned")
 
 type UserSubject struct {
-	Owner   string `xorm:"varchar(100) pk"`
-	Key     string `xorm:"varchar(64) pk"`
-	Subject string `xorm:"varchar(255) notnull"`
+	Owner string `xorm:"varchar(100) pk"`
+	Key   string `xorm:"varchar(64) pk"`
 }
 
 func userSubjectReservation(user *User) (UserSubject, error) {
@@ -26,7 +25,7 @@ func userSubjectReservation(user *User) (UserSubject, error) {
 		return UserSubject{}, fmt.Errorf("invalid user subject")
 	}
 	hash := sha256.Sum256([]byte(user.Id))
-	return UserSubject{Owner: user.Owner, Key: hex.EncodeToString(hash[:]), Subject: user.Id}, nil
+	return UserSubject{Owner: user.Owner, Key: hex.EncodeToString(hash[:])}, nil
 }
 
 func insertSubjectUsers(users []*User) (int64, error) {

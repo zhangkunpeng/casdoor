@@ -20,7 +20,7 @@ func persistRefreshedToken(original, successor *Token, rotate bool) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("lock refresh token: %w", err)
 	}
-	if !exists || current.ExpiresIn <= 0 || current.RefreshUsed {
+	if !exists || current.ExpiresIn <= 0 {
 		return false, nil
 	}
 
@@ -33,8 +33,8 @@ func persistRefreshedToken(original, successor *Token, rotate bool) (bool, error
 	successor.FamilyId = current.FamilyId
 	if rotate {
 		_, err = session.ID(core.PK{current.Owner, current.Name}).
-			Cols("expires_in", "refresh_used").
-			Update(&Token{ExpiresIn: 0, RefreshUsed: true})
+			Cols("expires_in").
+			Update(&Token{ExpiresIn: 0})
 		if err != nil {
 			return false, fmt.Errorf("retire refresh token: %w", err)
 		}

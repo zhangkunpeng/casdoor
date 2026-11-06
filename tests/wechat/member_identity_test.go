@@ -45,11 +45,30 @@ func memberRequestAt(t *testing.T, server, path string, app *object.Application,
 }
 
 func TestWechatMemberIdentity(t *testing.T) {
+	for _, scenario := range []struct {
+		name    string
+		app     *object.Application
+		allowed bool
+	}{
+		{"missing-application", nil, false},
+		{"unconfigured-scopes", &object.Application{}, false},
+		{"empty-scopes", &object.Application{Scopes: []*object.ScopeItem{}}, false},
+		{"unrelated-scope", &object.Application{Scopes: []*object.ScopeItem{{Name: "phone:write"}}}, false},
+		{"wildcard-scope", &object.Application{Scopes: []*object.ScopeItem{{Name: "wechat:.*"}}}, false},
+		{"nil-scope-item", &object.Application{Scopes: []*object.ScopeItem{nil}}, false},
+		{"explicit-native-scope", &object.Application{Scopes: []*object.ScopeItem{nil, {Name: "wechat:read"}}}, true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			if object.MemberScopeAllowed(scenario.app, "wechat:read") != scenario.allowed {
+				t.Fatal("member scope did not require an exact native scope name")
+			}
+		})
+	}
 	initializeProbe(t, true)
 	web.Router("/api/login/oauth/member-identity", &controllers.ApiController{}, "POST:MemberIdentity")
 	owner := fmt.Sprintf("wx-reader-%d", time.Now().UnixNano())
 	app := createProbeApplication(t, owner, "mini", "reader-mini")
-	if err := json.Unmarshal([]byte(`{"memberApiScopes":["wechat:read"]}`), app); err != nil {
+	if err := json.Unmarshal([]byte(`{"scopes":[{"name":"openid"},{"name":"wechat:read"}]}`), app); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := object.UpdateApplication(app.GetId(), app, true, "en", nil); err != nil {

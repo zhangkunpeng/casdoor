@@ -123,7 +123,7 @@ func TestWechatRefreshSession(t *testing.T) {
 			t.Fatal("refresh ignored successor persistence failure")
 		}
 		persisted, err := object.GetTokenByAccessToken(original.AccessToken)
-		if err != nil || persisted == nil || persisted.ExpiresIn <= 0 || persisted.RefreshUsed {
+		if err != nil || persisted == nil || persisted.ExpiresIn <= 0 {
 			t.Fatal("failed rotation did not roll back parent retirement")
 		}
 		if _, err := db.Exec("DROP TRIGGER " + trigger); err != nil {

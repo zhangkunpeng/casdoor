@@ -65,7 +65,7 @@ func TestWechatMemberPhone(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = base })
 	web.Router("/api/login/oauth/member-phone", &controllers.ApiController{}, "POST:MemberPhone")
 	app := createProbeApplication(t, fmt.Sprintf("wx-phone-%d", time.Now().UnixNano()), "mini", "phone-mini")
-	app.MemberApiScopes = []string{"phone:write"}
+	app.Scopes = []*object.ScopeItem{{Name: "phone:write"}}
 	if _, err := object.UpdateApplication(app.GetId(), app, true, "en", nil); err != nil {
 		t.Fatal("phone scopes update failed")
 	}

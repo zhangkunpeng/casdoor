@@ -27,8 +27,8 @@ Device 只消费 Xueda 提供的通用取图 URL，不持有 Casdoor 凭据，�
 
 ## 扩展边界
 
-基线为官方 `v4.26.0`。仅新增 `member-identity`、`member-phone` 和 `member-wechat-credential`，分别提供固定 AppID 的可信 OpenID、登录后可重试的手机号绑定、Casdoor 统一托管的微信上游凭据。对应 `memberApiScopes` 为 `wechat:read`、`phone:write`、`wechat:credential`。
+基线为官方 `v4.26.0`。仅新增 `member-identity`、`member-phone` 和 `member-wechat-credential`，分别提供固定 AppID 的可信 OpenID、登录后可重试的手机号绑定、Casdoor 统一托管的微信上游凭据。权限复用原生 `Application.Scopes`，名称分别为 `wechat:read`、`phone:write`、`wechat:credential`；扩展入口只接受明确配置的精确名称，空列表与通配符不授权。
 
-`memberApiScopes` 只约束这三个扩展接口。普通 Application 的 Basic 凭据在原生 API 上仍具有本组织管理权限，不能将其宣称为只读或全局最小授权。生产凭据必须只保存在服务端。
+扩展入口的 scope 检查只约束这三个接口。原生 OAuth 沿用自己的 scope 校验；普通 Application 的 Basic 凭据在原生 API 上仍具有本组织管理权限，不能将其宣称为只读或全局最小授权。生产凭据必须只保存在服务端。
 
 测试结束后停止本轮子进程和隔离容器，移除其独立卷及受保护的临时凭据。只保留脱敏结论、测试方法和代码提交，不提交完整 JWT、Provider Secret、二维码票据、手机号、人脸图片或原始日志。

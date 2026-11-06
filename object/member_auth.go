@@ -14,7 +14,6 @@ var (
 	ErrMemberAppDenied       = errors.New("member application is not allowed")
 	ErrMemberConflict        = errors.New("member operation conflict")
 	ErrMemberInvalid         = errors.New("invalid member operation")
-	ErrMemberNotFound        = errors.New("member resource not found")
 )
 
 func GetActiveMember(application *Application, raw string) (*User, error) {

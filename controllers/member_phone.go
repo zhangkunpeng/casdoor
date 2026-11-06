@@ -73,8 +73,6 @@ func (c *ApiController) memberOperationError(err error) {
 		c.memberError(http.StatusConflict, "member_operation_conflict")
 	case errors.Is(err, object.ErrMemberInvalid):
 		c.memberError(http.StatusBadRequest, "invalid_member_operation")
-	case errors.Is(err, object.ErrMemberNotFound):
-		c.memberError(http.StatusNotFound, "member_resource_not_found")
 	default:
 		c.memberError(http.StatusServiceUnavailable, "member_dependency_unavailable")
 	}

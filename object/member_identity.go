@@ -1,10 +1,6 @@
 package object
 
-import (
-	"fmt"
-
-	"github.com/casdoor/casdoor/util"
-)
+import "fmt"
 
 type MemberIdentity struct {
 	Subject      string `json:"subject"`
@@ -14,24 +10,20 @@ type MemberIdentity struct {
 }
 
 func MemberScopeAllowed(application *Application, scope string) bool {
-	return application != nil && util.InSlice(application.MemberApiScopes, scope)
-}
-
-func MemberAppAllowed(application *Application, appID string) (bool, error) {
-	for _, item := range application.Providers {
-		provider, err := GetProvider(util.GetId("admin", item.Name))
-		if err != nil {
-			return false, fmt.Errorf("read member application provider: %w", err)
-		}
-		if provider != nil && ((provider.Type == "WeChatMiniProgram" && provider.ClientId == appID) ||
-			(provider.Type == "WeChat" && (provider.ClientId == appID || provider.ClientId2 == appID))) {
-			return true, nil
+	if application != nil {
+		for _, item := range application.Scopes {
+			if item != nil && item.Name == scope {
+				return true
+			}
 		}
 	}
-	return false, nil
+	return false
 }
 
 func GetMemberIdentity(application *Application, subject, appID string) (*MemberIdentity, error) {
+	if _, err := memberWechatProvider(application, appID); err != nil {
+		return nil, err
+	}
 	user, err := GetUserByUserId(application.Organization, subject)
 	if err != nil || user == nil {
 		return nil, err

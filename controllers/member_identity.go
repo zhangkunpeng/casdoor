@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/casdoor/casdoor/object"
@@ -20,21 +21,16 @@ func (c *ApiController) MemberIdentity() {
 		c.memberError(http.StatusBadRequest, "invalid_app_id")
 		return
 	}
-	allowed, err := object.MemberAppAllowed(application, appID)
-	if err != nil {
-		c.memberError(http.StatusServiceUnavailable, "member_identity_unavailable")
-		return
-	}
-	if !allowed {
-		c.memberError(http.StatusForbidden, "member_app_denied")
-		return
-	}
 	subject := c.Ctx.Input.Query("subject")
 	if subject == "" || len(subject) > 255 {
 		c.memberError(http.StatusBadRequest, "invalid_subject")
 		return
 	}
 	identity, err := object.GetMemberIdentity(application, subject, appID)
+	if errors.Is(err, object.ErrMemberAppDenied) {
+		c.memberError(http.StatusForbidden, "member_app_denied")
+		return
+	}
 	if err != nil {
 		c.memberError(http.StatusServiceUnavailable, "member_identity_unavailable")
 		return
