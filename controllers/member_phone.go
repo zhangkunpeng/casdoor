@@ -14,37 +14,12 @@ func (c *ApiController) memberError(status int, code string) {
 	c.ServeJSON()
 }
 
-func (c *ApiController) memberApplication(scope string) *object.Application {
+func (c *ApiController) MemberPhone() {
 	ok, application, _, _, err := c.ValidateOAuth(false)
 	if err != nil || !ok {
-		return nil
-	}
-	if !object.MemberScopeAllowed(application, scope) {
-		c.memberError(http.StatusForbidden, "member_scope_denied")
-		return nil
-	}
-	return application
-}
-
-func (c *ApiController) memberMutationUser(application *object.Application) *object.User {
-	user, err := object.GetActiveMember(application, c.Ctx.Input.Query("access_token"))
-	if err != nil {
-		c.memberOperationError(err)
-		return nil
-	}
-	return user
-}
-
-func (c *ApiController) MemberPhone() {
-	application := c.memberApplication("phone:write")
-	if application == nil {
 		return
 	}
-	user := c.memberMutationUser(application)
-	if user == nil {
-		return
-	}
-	err := object.BindMemberPhone(application, user, c.Ctx.Input.Query("app_id"),
+	err = object.BindMemberPhone(application, c.Ctx.Input.Query("access_token"), c.Ctx.Input.Query("app_id"),
 		c.Ctx.Input.Query("code"))
 	if err != nil {
 		c.memberOperationError(err)

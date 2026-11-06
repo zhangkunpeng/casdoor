@@ -344,12 +344,6 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 		return true, nil
 	}
 
-	if providerType == "WeChat" {
-		if err := SetWechatUserIdentity(user, userInfo); err != nil {
-			return false, err
-		}
-	}
-
 	// Store the original OAuth provider token if available
 	if token != nil && token.AccessToken != "" {
 		// Store tokens per provider in Properties map
@@ -430,9 +424,6 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 			}
 		}
 		for k, v := range userInfo.Extra {
-			if providerType == "WeChat" && k == "wechat_unionid" && v == "" {
-				continue
-			}
 			extra[k] = v
 		}
 

@@ -1,7 +1,6 @@
 package idp
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -37,11 +36,9 @@ func TestResolveWechatOfficialAccountIdentity(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/cgi-bin/stable_token":
-					var fields map[string]any
-					if json.NewDecoder(r.Body).Decode(&fields) != nil ||
-						fields["appid"] != "official-app" || fields["secret"] != "test-secret" ||
-						fields["force_refresh"] != false || r.Method != http.MethodPost {
+				case "/cgi-bin/token":
+					if r.URL.Query().Get("appid") != "official-app" ||
+						r.URL.Query().Get("secret") != "test-secret" || r.Method != http.MethodGet {
 						t.Error("wrong account credentials")
 					}
 					fmt.Fprint(w, test.token)
@@ -57,7 +54,10 @@ func TestResolveWechatOfficialAccountIdentity(t *testing.T) {
 				}
 			}))
 			defer server.Close()
-			client := &http.Client{Transport: officialAccountTransport{http.DefaultTransport, server.URL}}
+			base := http.DefaultTransport
+			http.DefaultTransport = officialAccountTransport{base, server.URL}
+			t.Cleanup(func() { http.DefaultTransport = base })
+			client := &http.Client{}
 			user, err := ResolveWechatOfficialAccountIdentity(client, "official-app", "test-secret", "official-open")
 			if (err != nil) != test.wantError {
 				t.Fatalf("error=%v, wantError=%v", err, test.wantError)

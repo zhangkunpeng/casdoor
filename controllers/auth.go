@@ -744,9 +744,6 @@ func linkUserByProvider(user *object.User, provider *object.Provider, providerId
 	if object.IsFlexibleCustomProvider(provider.Type) {
 		return object.LinkFlexibleCustomAccount(user, provider.Name, providerId)
 	}
-	if provider.Type == "WeChat" {
-		providerId = user.WeChat
-	}
 	return object.LinkUserAccount(user, provider.Type, providerId)
 }
 
@@ -1148,18 +1145,20 @@ func (c *ApiController) Login() {
 			}
 		}
 
-		releaseWechatLock := func() {}
-		if provider.Type == "WeChat" {
-			var lockErr error
-			releaseWechatLock, lockErr = object.LockWechatOrganization(application.Organization)
-			if lockErr != nil {
-				c.ResponseError(lockErr.Error())
-				return
-			}
-			defer releaseWechatLock()
-		}
-
 		if authForm.Method == "signup" || authForm.Method == "signin" {
+			wechatUnionId := ""
+			if provider.Type == "WeChat" {
+				wechatUnionId = userInfo.UnionId
+				if wechatUnionId == "" {
+					wechatUnionId = userInfo.Extra["wechat_unionid"]
+				}
+				release, lockErr := object.LockWechatUnionID(application.Organization, wechatUnionId)
+				if lockErr != nil {
+					c.ResponseError(lockErr.Error())
+					return
+				}
+				defer release()
+			}
 			user := &object.User{}
 			if provider.Category == "SAML" && !object.IsFlexibleCustomProvider(provider.Type) {
 				// The userInfo.Id is the NameID in SAML response, it could be name / email / phone
@@ -1169,11 +1168,7 @@ func (c *ApiController) Login() {
 					return
 				}
 			} else if provider.Category == "OAuth" || object.IsFlexibleCustomProvider(provider.Type) {
-				if provider.Type == "WeChat" {
-					user, err = object.FindWechatUser(application.Organization, userInfo)
-				} else {
-					user, err = getUserByProvider(application.Organization, provider, userInfo.Id)
-				}
+				user, err = getUserByProvider(application.Organization, provider, userInfo.Id)
 				if err != nil {
 					c.ResponseError(err.Error())
 					return
@@ -1188,7 +1183,6 @@ func (c *ApiController) Login() {
 					c.ResponseError(err.Error())
 					return
 				}
-				releaseWechatLock()
 
 				if checkMfaEnable(c, user, organization, verificationType) {
 					return
@@ -1336,13 +1330,10 @@ func (c *ApiController) Login() {
 						user.Tag = application.DefaultTag
 					}
 
-					if provider.Type == "WeChat" {
-						if err = object.SetWechatUserIdentity(user, userInfo); err != nil {
-							c.ResponseError(err.Error())
-							return
-						}
-					}
 					var affected bool
+					if wechatUnionId != "" {
+						user.WeChat = wechatUnionId
+					}
 					affected, err = object.AddUser(user, c.GetAcceptLanguage())
 					if err != nil {
 						c.ResponseError(err.Error())
@@ -1377,7 +1368,6 @@ func (c *ApiController) Login() {
 					c.ResponseError(err.Error())
 					return
 				}
-				releaseWechatLock()
 
 				if checkMfaEnable(c, user, organization, verificationType) {
 					return
@@ -1442,7 +1432,6 @@ func (c *ApiController) Login() {
 				c.ResponseError(err.Error())
 				return
 			}
-			releaseWechatLock()
 
 			if isLinked {
 				resp = &Response{Status: "ok", Msg: "", Data: isLinked}
@@ -1767,15 +1756,19 @@ func (c *ApiController) HandleOfficialAccountEvent() {
 		return
 	}
 
+	wechatId := data.FromUserName
+	if identity.Unionid != "" {
+		wechatId = identity.Unionid
+	}
+
 	idp.Lock.Lock()
 	if idp.WechatCacheMap == nil {
 		idp.WechatCacheMap = make(map[string]idp.WechatCacheMapValue)
 	}
 	idp.WechatCacheMap[data.Ticket] = idp.WechatCacheMapValue{
 		IsScanned:     true,
-		WechatUnionId: identity.Unionid,
-		WechatOpenId:  identity.Openid,
-		AppId:         provider.ClientId2,
+		WechatUnionId: wechatId,
+		HasUnionId:    identity.Unionid != "",
 		ProviderName:  provider.Name,
 	}
 	idp.Lock.Unlock()

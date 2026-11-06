@@ -7,12 +7,11 @@ import (
 	"net/url"
 )
 
-// ResolveWechatOfficialAccountIdentity keeps OpenID when WeChat does not return UnionID.
 func ResolveWechatOfficialAccountIdentity(client *http.Client, appId, secret, openId string) (*WechatUserInfo, error) {
 	if appId == "" || secret == "" || openId == "" {
 		return nil, fmt.Errorf("missing official account identity parameters")
 	}
-	token, message, err := getWechatOfficialAccountAccessToken(client, appId, secret)
+	token, message, err := GetWechatOfficialAccountAccessToken(appId, secret)
 	if err != nil {
 		return nil, fmt.Errorf("get official account access token: %w", err)
 	}

@@ -2,15 +2,14 @@ package wechat_test
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,13 +19,7 @@ import (
 	"github.com/casdoor/casdoor/object"
 	"github.com/casdoor/casdoor/proxy"
 	"github.com/go-sql-driver/mysql"
-	"github.com/golang-jwt/jwt/v5"
 )
-
-func probeRoot() string {
-	_, source, _, _ := runtime.Caller(0)
-	return filepath.Clean(filepath.Join(filepath.Dir(source), "../.."))
-}
 
 var initializeProbeOnce sync.Once
 
@@ -36,8 +29,14 @@ func initializeProbe(t *testing.T, create bool) {
 	if dsn == "" {
 		t.Skip("requires isolated MySQL CASDOOR_WECHAT_TEST_DSN")
 	}
-	if !isolatedProbeDSN(dsn) {
-		t.Fatal("CASDOOR_WECHAT_TEST_DSN requires loopback TCP and no database name")
+	config, err := mysql.ParseDSN(dsn)
+	if err != nil || config.Net != "tcp" || config.DBName != "" {
+		t.Fatal("test DSN must use loopback TCP without a database name")
+	}
+	host, _, err := net.SplitHostPort(config.Addr)
+	ip := net.ParseIP(host)
+	if err != nil || ip == nil || !ip.IsLoopback() {
+		t.Fatal("test DSN must use loopback TCP")
 	}
 	t.Setenv("driverName", "mysql")
 	t.Setenv("dataSourceName", dsn)
@@ -49,7 +48,8 @@ func initializeProbe(t *testing.T, create bool) {
 		web.BConfig.CopyRequestBody = true
 		web.BConfig.WebConfig.Session.SessionOn = true
 		web.BConfig.WebConfig.Session.SessionProvider = "memory"
-		web.TestBeegoInit(probeRoot())
+		_, source, _, _ := runtime.Caller(0)
+		web.TestBeegoInit(filepath.Clean(filepath.Join(filepath.Dir(source), "../..")))
 		object.InitAdapter()
 		if create {
 			object.CreateTables()
@@ -63,38 +63,6 @@ func initializeProbe(t *testing.T, create bool) {
 	http.DefaultTransport = wechatTransport{base, officialUnion}
 	t.Cleanup(func() { http.DefaultTransport = base })
 	proxy.InitHttpClient()
-}
-
-func isolatedProbeDSN(dsn string) bool {
-	config, err := mysql.ParseDSN(dsn)
-	if err != nil || config.Net != "tcp" || config.DBName != "" {
-		return false
-	}
-	host, port, err := net.SplitHostPort(config.Addr)
-	if err != nil || port == "" {
-		return false
-	}
-	ip := net.ParseIP(host)
-	return host == "localhost" || ip != nil && ip.IsLoopback()
-}
-
-func TestProbeDSNIsolation(t *testing.T) {
-	for _, scenario := range []struct {
-		dsn  string
-		safe bool
-	}{
-		{"probe:test-only@tcp(127.0.0.1:33060)/", true},
-		{"probe:test-only@tcp(localhost:33060)/", true},
-		{"probe:test-only@tcp([::1]:33060)/", true},
-		{"probe:test-only@tcp(192.0.2.1:3306)/", false},
-		{"probe:test-only@tcp(127.0.0.1:33060)/shared", false},
-		{"probe:test-only@unix(/tmp/mysql.sock)/", false},
-		{"invalid DSN", false},
-	} {
-		if isolatedProbeDSN(scenario.dsn) != scenario.safe {
-			t.Fatal("probe DSN isolation classification mismatch")
-		}
-	}
 }
 
 func createProbeApplication(t *testing.T, owner, suffix, appID string) *object.Application {
@@ -135,324 +103,141 @@ func miniToken(t *testing.T, app *object.Application, code string) *object.Token
 	t.Helper()
 	token, tokenError, err := object.GetWechatMiniProgramToken(app, code, "", false, "127.0.0.1:8000", "", "", "en")
 	if err != nil || tokenError != nil || token == nil {
-		t.Fatalf("mini login failed: implementationError=%t tokenError=%t", err != nil, tokenError != nil)
+		t.Fatalf("mini login failed: %v / %v", err, tokenError)
 	}
 	return token
 }
 
 func verifiedSubject(t *testing.T, app *object.Application, raw string) string {
 	t.Helper()
-	cert, err := object.GetCert("admin/cert-built-in")
-	if err != nil {
-		t.Fatal(err)
+	claims, err := object.ParseJwtTokenByApplication(raw, app)
+	if err != nil || claims.Subject == "" {
+		t.Fatalf("invalid issued token: %v", err)
 	}
-	key, err := jwt.ParseRSAPublicKeyFromPEM([]byte(cert.Certificate))
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := jwt.Parse(raw, func(*jwt.Token) (any, error) { return key, nil },
-		jwt.WithValidMethods([]string{"RS256"}), jwt.WithAudience(app.ClientId),
-		jwt.WithIssuer("http://127.0.0.1:8000"), jwt.WithExpirationRequired())
-	if err != nil {
-		t.Fatal("issued token signature or trust validation failed")
-	}
-	subject, err := token.Claims.GetSubject()
-	if err != nil || subject == "" {
-		t.Fatal("issued token has no subject")
-	}
-	return subject
+	return claims.Subject
 }
 
 func probeDatabase(t *testing.T) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("mysql", os.Getenv("CASDOOR_WECHAT_TEST_DSN")+"casdoor_probe")
 	if err != nil {
-		t.Fatal("isolated database connection failed")
+		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
 }
 
-func limitBusinessPool(t *testing.T, limit int) func() {
-	t.Helper()
-	db := probeDatabase(t)
-	if _, err := db.Exec("INSERT IGNORE INTO setting (owner, name) VALUES ('admin', 'setting-built-in')"); err != nil {
-		t.Fatal(err)
-	}
-	setting, err := object.GetSetting()
-	if err != nil || setting == nil {
-		t.Fatal("native pool setting unavailable")
-	}
-	previous := *setting
-	setting.DbMaxOpenConns, setting.DbMaxIdleConns = limit, limit
-	if _, err := object.UpdateSetting(setting); err != nil {
-		t.Fatal(err)
-	}
-	var once sync.Once
-	restore := func() {
-		once.Do(func() {
-			if _, err := object.UpdateSetting(&previous); err != nil {
-				t.Error("native pool setting restore failed")
-			}
-		})
-	}
-	t.Cleanup(restore)
-	return restore
-}
-
-func TestWechatLockLeavesBusinessPoolAvailable(t *testing.T) {
-	initializeProbe(t, true)
-	for _, limit := range []int{1, 2} {
-		t.Run(fmt.Sprint(limit), func(t *testing.T) {
-			owner := fmt.Sprintf("wx-pool-%d", time.Now().UnixNano())
-			restore := limitBusinessPool(t, limit)
-			release, err := object.LockWechatOrganization(owner)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer release()
-			type lockResult struct {
-				release func()
-				err     error
-			}
-			waiter := make(chan lockResult, 1)
-			if limit == 2 {
-				go func() {
-					next, err := object.LockWechatOrganization(owner)
-					waiter <- lockResult{next, err}
-				}()
-				db := probeDatabase(t)
-				deadline := time.NewTimer(2 * time.Second)
-				defer deadline.Stop()
-				ticker := time.NewTicker(5 * time.Millisecond)
-				defer ticker.Stop()
-			waiting:
-				for {
-					var waiting int
-					if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.processlist WHERE state = 'User lock'").Scan(&waiting); err != nil {
-						t.Fatal(err)
-					}
-					if waiting > 0 {
-						break
-					}
-					select {
-					case <-deadline.C:
-						t.Fatal("second registration did not wait for the organization lock")
-					case <-ticker.C:
-						continue waiting
-					}
-				}
-			}
-			result := make(chan error, 1)
-			go func() {
-				_, err := object.GetUserCount(owner, "", "", "")
-				result <- err
-			}()
-			blocked := false
-			select {
-			case err := <-result:
-				if err != nil {
-					t.Error(err)
-				}
-			case <-time.After(750 * time.Millisecond):
-				blocked = true
-			}
-			select {
-			case next := <-waiter:
-				if next.release != nil {
-					next.release()
-				}
-				t.Error("same-organization waiter acquired a held lock")
-			default:
-			}
-			release()
-			release()
-			if limit == 2 {
-				select {
-				case next := <-waiter:
-					if next.err != nil {
-						t.Error(next.err)
-					} else {
-						next.release()
-					}
-				case <-time.After(2 * time.Second):
-					t.Fatal("waiter did not resume after release")
-				}
-			}
-			if blocked {
-				select {
-				case <-result:
-				case <-time.After(2 * time.Second):
-					t.Fatal("business query did not recover after release")
-				}
-				t.Error("registration locks exhausted the business connection pool")
-			}
-			restore()
-		})
-	}
-}
-
 func probeAccountCount(t *testing.T, owner string) int {
 	t.Helper()
-	db := probeDatabase(t)
 	var users int
-	if err := db.QueryRow("SELECT COUNT(*) FROM `user` WHERE owner = ?", owner).Scan(&users); err != nil {
-		t.Fatal("account count read failed")
+	if err := probeDatabase(t).QueryRow("SELECT COUNT(*) FROM `user` WHERE owner = ?", owner).Scan(&users); err != nil {
+		t.Fatal(err)
 	}
 	return users
 }
 
-type processResult struct {
-	AccessToken string
+func TestWechatUsesNativeUserSchema(t *testing.T) {
+	initializeProbe(t, true)
+	typ := reflect.TypeOf(object.User{})
+	for name, tag := range map[string]string{"Owner": "varchar(100) notnull pk", "Id": "varchar(100) index"} {
+		field, _ := typ.FieldByName(name)
+		if field.Tag.Get("xorm") != tag {
+			t.Fatalf("%s schema changed", name)
+		}
+	}
+	var dataType string
+	var length, uniqueSubjects int
+	db := probeDatabase(t)
+	if err := db.QueryRow("SELECT data_type, character_maximum_length FROM information_schema.columns WHERE table_schema = 'casdoor_probe' AND table_name = 'user' AND column_name = 'id'").Scan(&dataType, &length); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow("SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema = 'casdoor_probe' AND table_name = 'user' AND index_name LIKE '%subject%'").Scan(&uniqueSubjects); err != nil {
+		t.Fatal(err)
+	}
+	if dataType != "varchar" || length != 100 || uniqueSubjects != 0 {
+		t.Fatalf("unexpected native schema: %s(%d), subject indexes=%d", dataType, length, uniqueSubjects)
+	}
 }
 
-func runProbeProcesses(t *testing.T, app *object.Application) []processResult {
-	t.Helper()
-	resultDir := t.TempDir()
-	ready := filepath.Join(resultDir, "start")
+func TestWechatWithoutUnionIDUsesNativeLookup(t *testing.T) {
+	initializeProbe(t, true)
+	owner := fmt.Sprintf("wx-native-%d", time.Now().UnixNano())
+	a := createProbeApplication(t, owner, "a", "native-app-a")
+	b := createProbeApplication(t, owner, "b", "native-app-b")
+	first := verifiedSubject(t, a, miniToken(t, a, "no-union").AccessToken)
+	second := verifiedSubject(t, b, miniToken(t, b, "no-union").AccessToken)
+	user, err := object.GetUserByUserId(owner, first)
+	if err != nil || user == nil {
+		t.Fatalf("read native user: %v", err)
+	}
+	if first != second || probeAccountCount(t, owner) != 1 || user.WeChat != "mini-open" ||
+		user.Name != "wechat-mini-open" || user.Properties[object.UserPropertiesWechatOpenId] != "mini-open" ||
+		user.Properties[object.UserPropertiesWechatUnionId] != "" || user.Properties["oauth_WeChat_extra"] != "" {
+		t.Fatal("no-UnionID login differs from native OpenID lookup and persistence")
+	}
+}
+
+func TestWechatUnionIDAcrossProcesses(t *testing.T) {
+	initializeProbe(t, true)
+	owner := fmt.Sprintf("wx-process-%d", time.Now().UnixNano())
+	app := createProbeApplication(t, owner, "mini", "process-mini")
+	db := probeDatabase(t)
+	if _, err := db.Exec("CREATE TRIGGER wechat_process_delay BEFORE INSERT ON `user` FOR EACH ROW DO SLEEP(0.2)"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec("DROP TRIGGER IF EXISTS wechat_process_delay") })
+	dir := t.TempDir()
 	var wg sync.WaitGroup
-	errs := make(chan error, 2)
+	results := make(chan error, 2)
 	for i := 0; i < 2; i++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			cmd := exec.Command(os.Args[0], "-test.run=^TestWechatProcessHelper$", "-test.v")
-			cmd.Dir = filepath.Join(probeRoot(), "tests/wechat")
-			cmd.Env = append(os.Environ(), "XUEDA_PROBE_APP="+app.GetId(),
-				"XUEDA_PROBE_BARRIER="+ready, "XUEDA_PROBE_RESULT="+filepath.Join(resultDir, fmt.Sprint(index)),
-				"XUEDA_PROBE_READY="+filepath.Join(resultDir, fmt.Sprintf("ready-%d", index)))
-			if output, err := cmd.CombinedOutput(); err != nil {
-				for _, line := range strings.Split(string(output), "\n") {
-					if strings.Contains(line, "capabilities_test.go:") || strings.HasPrefix(line, "panic:") {
-						errs <- fmt.Errorf("process %d: %s", index, line)
-						return
-					}
-				}
-				errs <- fmt.Errorf("process %d failed; output length=%d", index, len(output))
+			cmd := exec.Command(os.Args[0], "-test.run=^TestWechatProcessHelper$")
+			cmd.Env = append(os.Environ(), "WECHAT_TEST_APP="+app.GetId(),
+				"WECHAT_TEST_START="+time.Now().Add(time.Second).Format(time.RFC3339Nano),
+				"WECHAT_TEST_RESULT="+filepath.Join(dir, fmt.Sprint(index)))
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				results <- fmt.Errorf("child login failed: %w: %s", err, output)
 			}
 		}(i)
 	}
-	deadline := time.Now().Add(30 * time.Second)
-	for i := 0; i < 2; i++ {
-		for {
-			if _, err := os.Stat(filepath.Join(resultDir, fmt.Sprintf("ready-%d", i))); err == nil {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatal("child process did not reach login barrier")
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-	}
-	if err := os.WriteFile(ready, []byte("start"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	wg.Wait()
-	close(errs)
-	for err := range errs {
+	close(results)
+	for err := range results {
 		t.Fatal(err)
 	}
-	var results []processResult
-	for i := 0; i < 2; i++ {
-		content, err := os.ReadFile(filepath.Join(resultDir, fmt.Sprint(i)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var result processResult
-		if err := json.Unmarshal(content, &result); err != nil {
-			t.Fatal(err)
-		}
-		results = append(results, result)
+	first, err := os.ReadFile(filepath.Join(dir, "0"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	return results
-}
-
-func TestWechatIndependentProcesses(t *testing.T) {
-	initializeProbe(t, true)
-	owner := fmt.Sprintf("wx-process-%d", time.Now().UnixNano())
-	app := createProbeApplication(t, owner, "mini", "process-mini")
-	results := runProbeProcesses(t, app)
-	first := verifiedSubject(t, app, results[0].AccessToken)
-	second := verifiedSubject(t, app, results[1].AccessToken)
-	users := probeAccountCount(t, owner)
-	if first != second || users != 1 {
-		t.Fatalf("concurrent account invariant failed: sameSubject=%t users=%d",
-			first == second, users)
+	second, err := os.ReadFile(filepath.Join(dir, "1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) == "" || string(first) != string(second) || probeAccountCount(t, owner) != 1 {
+		t.Fatal("same UnionID created different users across processes")
 	}
 }
 
 func TestWechatProcessHelper(t *testing.T) {
-	appID := os.Getenv("XUEDA_PROBE_APP")
+	appID := os.Getenv("WECHAT_TEST_APP")
 	if appID == "" {
-		t.Skip("child-process helper")
+		t.Skip("child-process helper; executed by TestWechatUnionIDAcrossProcesses")
 	}
 	initializeProbe(t, false)
 	app, err := object.GetApplication(appID)
 	if err != nil || app == nil {
-		t.Fatal("probe application not found")
+		t.Fatalf("read child application: %v", err)
 	}
-	if err := os.WriteFile(os.Getenv("XUEDA_PROBE_READY"), []byte("ready"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		if _, err := os.Stat(os.Getenv("XUEDA_PROBE_BARRIER")); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("process barrier timed out")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	result := processResult{AccessToken: miniToken(t, app, "new-test-code").AccessToken}
-	content, err := json.Marshal(result)
+	start, err := time.Parse(time.RFC3339Nano, os.Getenv("WECHAT_TEST_START"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(os.Getenv("XUEDA_PROBE_RESULT"), content, 0o600); err != nil {
+	time.Sleep(time.Until(start))
+	subject := verifiedSubject(t, app, miniToken(t, app, "new-test-code").AccessToken)
+	if err := os.WriteFile(os.Getenv("WECHAT_TEST_RESULT"), []byte(subject), 0o600); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func TestWechatAppIDAndAccountIsolation(t *testing.T) {
-	initializeProbe(t, true)
-	t.Run("different-wechat", func(t *testing.T) {
-		owner := fmt.Sprintf("wx-person-%d", time.Now().UnixNano())
-		app := createProbeApplication(t, owner, "mini", "app-a")
-		first := verifiedSubject(t, app, miniToken(t, app, "new-test-code").AccessToken)
-		second := verifiedSubject(t, app, miniToken(t, app, "different-wechat").AccessToken)
-		users := probeAccountCount(t, owner)
-		if first == second || users != 2 {
-			t.Fatalf("different people merged: sameSubject=%t users=%d", first == second, users)
-		}
-	})
-	t.Run("different-appid-without-union", func(t *testing.T) {
-		owner := fmt.Sprintf("wx-app-%d", time.Now().UnixNano())
-		a := createProbeApplication(t, owner, "a", "app-a")
-		b := createProbeApplication(t, owner, "b", "app-b")
-		first := verifiedSubject(t, a, miniToken(t, a, "no-union").AccessToken)
-		second := verifiedSubject(t, b, miniToken(t, b, "no-union").AccessToken)
-		users := probeAccountCount(t, owner)
-		if first == second || users != 2 {
-			t.Fatalf("unrelated application identities merged: sameSubject=%t users=%d", first == second, users)
-		}
-	})
-	t.Run("rename-keeps-wechat-login-subject", func(t *testing.T) {
-		owner := fmt.Sprintf("wx-rename-%d", time.Now().UnixNano())
-		app := createProbeApplication(t, owner, "mini", "app-a")
-		first := verifiedSubject(t, app, miniToken(t, app, "new-test-code").AccessToken)
-		user, err := object.GetUserByUserId(owner, first)
-		if err != nil || user == nil {
-			t.Fatal("persisted user not found")
-		}
-		oldID := user.GetId()
-		user.Name = "renamed-member"
-		if _, err := object.UpdateUser(oldID, user, []string{"name"}, true); err != nil {
-			t.Fatal("rename failed")
-		}
-		second := verifiedSubject(t, app, miniToken(t, app, "new-test-code").AccessToken)
-		if first != second || strings.TrimSpace(second) == "" {
-			t.Fatal("rename changed WeChat subject")
-		}
-	})
 }

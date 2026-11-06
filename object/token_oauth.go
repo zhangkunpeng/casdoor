@@ -674,19 +674,22 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 	}
 
 	openId, unionId := session.Openid, session.Unionid
-	if openId == "" {
+	if openId == "" && unionId == "" {
 		return nil, &TokenError{
 			Error:            InvalidRequest,
 			ErrorDescription: "the wechat mini program session is invalid",
 		}, nil
 	}
-	release, err := LockWechatOrganization(application.Organization)
+	wechatId := openId
+	if unionId != "" {
+		wechatId = unionId
+	}
+	release, err := LockWechatUnionID(application.Organization, unionId)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer release()
-	info := &idp.UserInfo{Id: idp.WechatSubject(provider.ClientId, openId, unionId), Extra: map[string]string{"wechat_unionid": unionId, idp.BuildWechatOpenIdKey(provider.ClientId): openId}}
-	user, err := FindWechatUser(application.Organization, info)
+	user, err := getUserByWechatId(application.Organization, openId, unionId)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -716,6 +719,19 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 					ErrorDescription: "the phone number is already bound to another wechat account",
 				}, nil
 			}
+
+			user.WeChat = wechatId
+			if user.Properties == nil {
+				user.Properties = map[string]string{}
+			}
+			user.Properties[UserPropertiesWechatOpenId] = openId
+			if unionId != "" {
+				user.Properties[UserPropertiesWechatUnionId] = unionId
+			}
+			_, err = UpdateUser(user.GetId(), user, []string{"wechat", "properties"}, false)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 
@@ -738,7 +754,7 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 		if CheckUsername(username, lang) == "" {
 			name = username
 		} else {
-			name = util.GetRandomName()
+			name = fmt.Sprintf("wechat-%s", openId)
 		}
 
 		// Generate a unique user ID within the confines of the application
@@ -756,7 +772,7 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 			Phone:             phone,
 			CountryCode:       countryCode,
 			SignupApplication: application.Name,
-			WeChat:            info.Id,
+			WeChat:            wechatId,
 			Type:              "normal-user",
 			CreatedTime:       util.GetCurrentTime(),
 			IsAdmin:           false,
@@ -767,26 +783,25 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 				UserPropertiesWechatUnionId: unionId,
 			},
 		}
-		if err = SetWechatUserIdentity(user, info); err != nil {
-			return nil, nil, err
-		}
 		_, err = AddUser(user, lang)
 		if err != nil {
 			return nil, nil, err
 		}
 	}
 
-	organization, err := GetOrganizationByUser(user)
-	if err != nil {
-		return nil, nil, err
-	}
-	if _, err = SetUserOAuthProperties(organization, user, "WeChat", info, nil); err != nil {
-		return nil, nil, err
-	}
-	release()
-
 	if tokenError := getInactiveUserTokenError(user); tokenError != nil {
 		return nil, tokenError, nil
+	}
+
+	if unionId != "" && user.WeChat != unionId {
+		user.WeChat = unionId
+		if user.Properties == nil {
+			user.Properties = map[string]string{}
+		}
+		user.Properties[UserPropertiesWechatUnionId] = unionId
+		if _, err = UpdateUser(user.GetId(), user, []string{"wechat", "properties"}, false); err != nil {
+			return nil, nil, err
+		}
 	}
 
 	err = ExtendUserWithRolesAndPermissions(user)

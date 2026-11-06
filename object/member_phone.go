@@ -1,6 +1,7 @@
 package object
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -8,6 +9,12 @@ import (
 
 	"github.com/casdoor/casdoor/idp"
 	"github.com/casdoor/casdoor/util"
+)
+
+var (
+	ErrMemberUnauthenticated = errors.New("phone binding access token is inactive")
+	ErrMemberAppDenied       = errors.New("phone binding application is not allowed")
+	ErrMemberInvalid         = errors.New("invalid phone binding")
 )
 
 func memberWechatProvider(application *Application, appID string) (*Provider, error) {
@@ -23,9 +30,27 @@ func memberWechatProvider(application *Application, appID string) (*Provider, er
 	return nil, ErrMemberAppDenied
 }
 
-func BindMemberPhone(application *Application, user *User, appID, code string) error {
+func BindMemberPhone(application *Application, accessToken, appID, code string) error {
 	if code == "" || len(code) > 1024 {
 		return ErrMemberInvalid
+	}
+	token, err := GetTokenByAccessToken(accessToken)
+	if err != nil {
+		return fmt.Errorf("read phone binding access token: %w", err)
+	}
+	if token == nil || token.ExpiresIn <= 0 || token.User == "" || token.Owner != application.Owner ||
+		token.Application != application.Name || token.Organization != application.Organization {
+		return ErrMemberUnauthenticated
+	}
+	if expired, _ := util.IsTokenExpired(token.CreatedTime, token.ExpiresIn); expired {
+		return ErrMemberUnauthenticated
+	}
+	user, err := GetUser(util.GetId(token.Organization, token.User))
+	if err != nil {
+		return fmt.Errorf("read phone binding user: %w", err)
+	}
+	if user == nil || user.IsForbidden || user.IsDeleted {
+		return ErrMemberUnauthenticated
 	}
 	provider, err := memberWechatProvider(application, appID)
 	if err != nil {
@@ -42,26 +67,13 @@ func BindMemberPhone(application *Application, user *User, appID, code string) e
 		strings.Trim(phone, "0123456789") != "" {
 		return fmt.Errorf("invalid trusted phone response")
 	}
-	session := ormer.Engine.NewSession()
-	defer session.Close()
-	if err := session.Begin(); err != nil {
-		return fmt.Errorf("begin phone binding: %w", err)
-	}
-	defer session.Rollback()
-	current := User{Owner: user.Owner, Name: user.Name}
-	found, err := session.ForUpdate().Get(&current)
+	user.Phone, user.CountryCode = phone, country
+	updated, err := UpdateUser(user.GetId(), user, []string{"phone", "country_code"}, true)
 	if err != nil {
-		return fmt.Errorf("lock member for phone binding: %w", err)
-	}
-	if !found || current.Id != user.Id || current.IsForbidden || current.IsDeleted {
-		return ErrMemberUnauthenticated
-	}
-	current.Phone, current.CountryCode = phone, country
-	if _, err := updateUserInSession(session, current.GetId(), &current, []string{"phone", "country_code"}); err != nil {
 		return fmt.Errorf("update trusted member phone; authorize a fresh code: %w", err)
 	}
-	if err := session.Commit(); err != nil {
-		return fmt.Errorf("commit phone binding; authorize a fresh code: %w", err)
+	if !updated {
+		return fmt.Errorf("phone binding user is no longer available")
 	}
 	return nil
 }

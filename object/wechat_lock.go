@@ -4,60 +4,46 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
-	"database/sql/driver"
 	"encoding/hex"
 	"fmt"
-	"sync"
 	"time"
 )
 
-func (a *Ormer) openWechatLockPool() error {
-	if a.driverName != "mysql" {
-		return nil
+func LockWechatUnionID(owner, unionID string) (func(), error) {
+	if unionID == "" {
+		return func() {}, nil
 	}
-	db, err := sql.Open(a.driverName, a.dataSourceName+a.dbName)
-	if err != nil {
-		return fmt.Errorf("open WeChat registration lock pool: %w", err)
-	}
-	// A holder and a waiter may occupy both connections; business queries use a separate pool.
-	db.SetMaxOpenConns(2)
-	db.SetMaxIdleConns(2)
-	a.wechatLockDB = db
-	return nil
-}
-
-// LockWechatOrganization serializes all WeChat registration paths across processes on the shared MySQL database.
-func LockWechatOrganization(owner string) (func(), error) {
 	if ormer.driverName != "mysql" {
-		return nil, fmt.Errorf("WeChat registration locking requires MySQL")
+		return nil, fmt.Errorf("WeChat UnionID registration locking requires MySQL")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
-	defer cancel()
-	conn, err := ormer.wechatLockDB.Conn(ctx)
+	// A dedicated connection keeps waiting registrations out of the business pool.
+	db, err := sql.Open(ormer.driverName, ormer.dataSourceName+ormer.dbName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open WeChat UnionID lock connection: %w", err)
 	}
-	hash := sha256.Sum256([]byte(ormer.dbName + ":wechat:" + owner))
-	key := hex.EncodeToString(hash[:])
-	var acquired int
-	if err = conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 30)", key).Scan(&acquired); err != nil || acquired != 1 {
-		_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(0)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Second)
+	defer cancel()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		db.Close()
+		return nil, fmt.Errorf("connect WeChat UnionID lock: %w", err)
+	}
+	closeLock := func() {
 		conn.Close()
-		if err != nil {
-			return nil, fmt.Errorf("acquire WeChat registration lock: %w", err)
-		}
-		return nil, fmt.Errorf("WeChat registration lock timed out")
+		db.Close()
 	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer releaseCancel()
-			var released int
-			if err := conn.QueryRowContext(releaseCtx, "SELECT RELEASE_LOCK(?)", key).Scan(&released); err != nil || released != 1 {
-				_ = conn.Raw(func(any) error { return driver.ErrBadConn })
-			}
-			_ = conn.Close()
-		})
-	}, nil
+	hash := sha256.Sum256([]byte(ormer.dbName + ":" + owner + ":" + unionID))
+	var acquired int
+	if err := conn.QueryRowContext(ctx, "SELECT GET_LOCK(?, 30)", hex.EncodeToString(hash[:])).Scan(&acquired); err != nil {
+		closeLock()
+		return nil, fmt.Errorf("acquire WeChat UnionID lock: %w", err)
+	}
+	if acquired != 1 {
+		closeLock()
+		return nil, fmt.Errorf("WeChat UnionID lock timed out")
+	}
+	// Closing the nonpooled MySQL connection releases its advisory lock on every return path.
+	return closeLock, nil
 }

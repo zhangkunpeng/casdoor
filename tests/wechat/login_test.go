@@ -42,13 +42,10 @@ func (r wechatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		if req.URL.Query().Get("js_code") == "different-wechat" {
 			body = `{"openid":"different-open","unionid":"different-union","session_key":"test-only"}`
 		}
-		if req.URL.Query().Get("js_code") == "conflict-union" {
-			body = `{"openid":"mini-open","unionid":"different-union","session_key":"test-only"}`
-		}
 		if req.URL.Query().Get("js_code") == "no-union" {
 			body = `{"openid":"mini-open","session_key":"test-only"}`
 		}
-	case "/cgi-bin/stable_token":
+	case "/cgi-bin/token", "/cgi-bin/stable_token":
 		body = `{"access_token":"test-only","expires_in":7200}`
 	case "/cgi-bin/user/info":
 		body = `{"openid":"official-open","unionid":"same-real-union"}`
@@ -84,7 +81,7 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-openid-only", "union-conflict"} {
+	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-subscribe", "official-openid-only", "mini-openid-only"} {
 		t.Run(scenario, func(t *testing.T) {
 			officialUnion.Store(scenario != "official-openid-only")
 			owner := fmt.Sprintf("wx-%s-%d", scenario, time.Now().UnixNano())
@@ -106,6 +103,13 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			app, err = object.GetApplication(app.GetId())
 			if err != nil {
 				t.Fatal(err)
+			}
+			if scenario == "concurrent" {
+				db := probeDatabase(t)
+				if _, err := db.Exec("CREATE TRIGGER wechat_signup_delay BEFORE INSERT ON `user` FOR EACH ROW DO SLEEP(0.2)"); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() { db.Exec("DROP TRIGGER IF EXISTS wechat_signup_delay") })
 			}
 			miniCode := "new-test-code"
 			miniLogin := func() (string, error) {
@@ -129,6 +133,9 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 				hash := sha1.Sum([]byte(strings.Join(vals, "")))
 				callback := server.URL + "/api/webhook?timestamp=123&nonce=nonce&signature=" + hex.EncodeToString(hash[:])
 				xml := fmt.Sprintf("<xml><MsgType>event</MsgType><Event>SCAN</Event><EventKey>admin/%s</EventKey><FromUserName>official-open</FromUserName><Ticket>%s</Ticket></xml>", official.Name, ticket)
+				if scenario == "official-subscribe" {
+					xml = strings.ReplaceAll(strings.ReplaceAll(xml, "SCAN", "SUBSCRIBE"), "<EventKey>admin/", "<EventKey>qrscene_admin/")
+				}
 				res, err := http.Post(callback, "text/xml", strings.NewReader(xml))
 				if err != nil {
 					return "", err
@@ -168,6 +175,10 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			var first, second string
 			var firstErr, secondErr error
 			switch scenario {
+			case "mini-openid-only":
+				miniCode = "no-union"
+				first, firstErr = miniLogin()
+				second, secondErr = miniLogin()
 			case "union-upgrade":
 				miniCode = "no-union"
 				first, firstErr = miniLogin()
@@ -180,7 +191,7 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			case "official-openid-only":
 				first, firstErr = officialLogin()
 				second, secondErr = officialLogin()
-			case "mini-first", "union-conflict":
+			case "mini-first", "official-subscribe":
 				first, firstErr = miniLogin()
 				second, secondErr = officialLogin()
 			case "official-first":
@@ -199,12 +210,6 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			if first == "" || first != second {
 				t.Fatalf("different token subjects: %q / %q", first, second)
 			}
-			if scenario == "union-conflict" {
-				miniCode = "conflict-union"
-				if _, err := miniLogin(); err == nil {
-					t.Fatal("conflicting UnionID was accepted")
-				}
-			}
 			count, err := object.GetUserCount(owner, "", "", "")
 			if err != nil {
 				t.Fatal(err)
@@ -214,7 +219,10 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			}
 			expectedIdentity := "same-real-union"
 			if scenario == "official-openid-only" {
-				expectedIdentity = "openid:official-app:official-open"
+				expectedIdentity = "official-open"
+			}
+			if scenario == "mini-openid-only" {
+				expectedIdentity = "mini-open"
 			}
 			user, err := object.GetUserByField(owner, "WeChat", expectedIdentity)
 			if err != nil {

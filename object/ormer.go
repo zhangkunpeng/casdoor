@@ -136,19 +136,10 @@ type Ormer struct {
 	dbName         string
 	Db             *sql.DB
 	Engine         *xorm.Engine
-	wechatLockDB   *sql.DB
 }
 
 // finalizer is the destructor for Ormer.
 func finalizer(a *Ormer) {
-	if a.wechatLockDB != nil {
-		err := a.wechatLockDB.Close()
-		if err != nil {
-			panic(err)
-		}
-		a.wechatLockDB = nil
-	}
-
 	if a.Engine != nil {
 		err := a.Engine.Close()
 		if err != nil {
@@ -178,10 +169,6 @@ func NewAdapter(driverName string, dataSourceName string, dbName string) (*Ormer
 	if err != nil {
 		return nil, err
 	}
-	if err = a.openWechatLockPool(); err != nil {
-		a.close()
-		return nil, err
-	}
 
 	// Call the destructor when the object is released.
 	runtime.SetFinalizer(a, finalizer)
@@ -200,10 +187,6 @@ func NewAdapterFromDb(driverName string, dataSourceName string, dbName string, d
 	// Open the DB, create it if not existed.
 	err := a.openFromDb(a.Db)
 	if err != nil {
-		return nil, err
-	}
-	if err = a.openWechatLockPool(); err != nil {
-		a.close()
 		return nil, err
 	}
 

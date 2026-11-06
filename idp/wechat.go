@@ -46,8 +46,7 @@ type WeChatIdProvider struct {
 type WechatCacheMapValue struct {
 	IsScanned     bool
 	WechatUnionId string
-	WechatOpenId  string
-	AppId         string
+	HasUnionId    bool
 	ProviderName  string
 }
 
@@ -195,23 +194,26 @@ func (idp *WeChatIdProvider) GetUserInfo(token *oauth2.Token) (*UserInfo, error)
 	accessToken := token.AccessToken
 
 	if strings.HasPrefix(accessToken, "wechat_oa:") {
-		Lock.Lock()
-		defer Lock.Unlock()
+		Lock.RLock()
 		mapValue, ok := WechatCacheMap[accessToken[10:]]
+		Lock.RUnlock()
 
-		if !ok || mapValue.WechatOpenId == "" {
+		if !ok || mapValue.WechatUnionId == "" {
 			return nil, fmt.Errorf("error ticket")
 		}
 
+		Lock.Lock()
 		delete(WechatCacheMap, accessToken[10:])
+		Lock.Unlock()
 
-		identity := WechatSubject(mapValue.AppId, mapValue.WechatOpenId, mapValue.WechatUnionId)
 		userInfo := UserInfo{
-			Id:          identity,
-			Username:    "wx_user_" + identity,
-			DisplayName: "wx_user_" + identity,
+			Id:          mapValue.WechatUnionId,
+			Username:    "wx_user_" + mapValue.WechatUnionId,
+			DisplayName: "wx_user_" + mapValue.WechatUnionId,
 			AvatarUrl:   "",
-			Extra:       map[string]string{"wechat_unionid": mapValue.WechatUnionId, BuildWechatOpenIdKey(mapValue.AppId): mapValue.WechatOpenId},
+		}
+		if mapValue.HasUnionId {
+			userInfo.UnionId = mapValue.WechatUnionId
 		}
 		return &userInfo, nil
 	}
@@ -242,7 +244,7 @@ func (idp *WeChatIdProvider) GetUserInfo(token *oauth2.Token) (*UserInfo, error)
 
 	id := wechatUserInfo.Unionid
 	if id == "" {
-		id = WechatSubject(idp.Config.ClientID, wechatUserInfo.Openid, "")
+		id = wechatUserInfo.Openid
 	}
 
 	extra := make(map[string]string)
@@ -264,15 +266,36 @@ func BuildWechatOpenIdKey(appId string) string {
 }
 
 func GetWechatOfficialAccountAccessToken(clientId string, clientSecret string) (string, string, error) {
-	return getWechatOfficialAccountAccessToken(&http.Client{Timeout: 10 * time.Second}, clientId, clientSecret)
-}
-
-func getWechatOfficialAccountAccessToken(client *http.Client, clientId string, clientSecret string) (string, string, error) {
-	credential, err := FetchWechatAppCredential(client, clientId, clientSecret)
+	accessTokenUrl := fmt.Sprintf("https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=%s&secret=%s", clientId, clientSecret)
+	request, err := http.NewRequest("GET", accessTokenUrl, nil)
 	if err != nil {
 		return "", "", err
 	}
-	return credential.AccessToken, "", nil
+
+	client := new(http.Client)
+	resp, err := client.Do(request)
+	if err != nil {
+		return "", "", err
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", "", err
+	}
+
+	var data struct {
+		ExpireIn    int    `json:"expires_in"`
+		AccessToken string `json:"access_token"`
+		ErrCode     int    `json:"errcode"`
+		Errmsg      string `json:"errmsg"`
+	}
+	err = json.Unmarshal(respBytes, &data)
+	if err != nil {
+		return "", "", err
+	}
+
+	return data.AccessToken, data.Errmsg, nil
 }
 
 func GetWechatOfficialAccountQRCode(clientId string, clientSecret string, providerId string) (string, string, error) {
@@ -333,11 +356,4 @@ func VerifyWechatSignature(token string, nonce string, timestamp string, signatu
 	b := sha1.Sum([]byte(tmpStr))
 	res := hex.EncodeToString(b[:])
 	return subtle.ConstantTimeCompare([]byte(res), []byte(signature)) == 1
-}
-
-func WechatSubject(appId, openId, unionId string) string {
-	if unionId != "" {
-		return unionId
-	}
-	return "openid:" + appId + ":" + openId
 }

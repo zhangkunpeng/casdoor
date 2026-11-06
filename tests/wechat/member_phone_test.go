@@ -69,10 +69,6 @@ func TestWechatMemberPhone(t *testing.T) {
 	t.Cleanup(func() { http.DefaultTransport = base })
 	web.Router("/api/login/oauth/member-phone", &controllers.ApiController{}, "POST:MemberPhone")
 	app := createProbeApplication(t, fmt.Sprintf("wx-phone-%d", time.Now().UnixNano()), "mini", "phone-mini")
-	app.Scopes = []*object.ScopeItem{{Name: "phone:write"}}
-	if _, err := object.UpdateApplication(app.GetId(), app, true, "en", nil); err != nil {
-		t.Fatal("phone scopes update failed")
-	}
 	var err error
 	app, err = object.GetApplication(app.GetId())
 	if err != nil || app == nil {
@@ -109,11 +105,34 @@ func TestWechatMemberPhone(t *testing.T) {
 	if _, err := db.Exec("UPDATE `user` SET updated_time = ? WHERE owner = ? AND name = ?", oldTime, before.Owner, before.Name); err != nil {
 		t.Fatal(err)
 	}
-	restorePool := limitBusinessPool(t, 1)
 	server := httptest.NewServer(web.BeeApp.Handlers)
 	defer server.Close()
 	values := url.Values{"access_token": {session.AccessToken}, "app_id": {"phone-mini"},
 		"code": {"trusted-phone-code"}}
+	for _, denied := range []struct {
+		field, value string
+		status       int
+	}{
+		{"access_token", "", http.StatusUnauthorized},
+		{"access_token", session.IdToken, http.StatusUnauthorized},
+		{"access_token", session.RefreshToken, http.StatusUnauthorized},
+		{"app_id", "unconfigured-mini", http.StatusForbidden},
+		{"code", "", http.StatusBadRequest},
+	} {
+		old := values.Get(denied.field)
+		values.Set(denied.field, denied.value)
+		if status := memberMutation(t, server.URL, "member-phone", app, values); status != denied.status {
+			t.Fatalf("invalid %s: status=%d, want=%d", denied.field, status, denied.status)
+		}
+		values.Set(denied.field, old)
+	}
+	other := createProbeApplication(t, fmt.Sprintf("wx-other-phone-%d", time.Now().UnixNano()), "mini", "other-mini")
+	if status := memberMutation(t, server.URL, "member-phone", other, values); status != http.StatusUnauthorized {
+		t.Fatal("another application accepted this access token")
+	}
+	if calls.Load() != 0 {
+		t.Fatal("invalid phone request reached WeChat")
+	}
 	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusOK {
 		t.Fatalf("trusted phone binding failed: status=%d", status)
 	}
@@ -174,6 +193,14 @@ func TestWechatMemberPhone(t *testing.T) {
 	if calls.Load() != 5 {
 		t.Fatal("phone authorization requests did not follow native one-use verification")
 	}
+	if _, err := object.ExpireToken(session); err != nil {
+		t.Fatal(err)
+	}
+	if status := memberMutation(t, server.URL, "member-phone", app, values); status != http.StatusUnauthorized {
+		t.Fatal("revoked token mutated phone")
+	}
+	session = miniToken(t, app, "new-test-code")
+	values.Set("access_token", session.AccessToken)
 	user.IsForbidden = true
 	if _, err := object.UpdateUser(user.GetId(), user, []string{"is_forbidden"}, true); err != nil {
 		t.Fatal("member disable failed")
@@ -185,5 +212,4 @@ func TestWechatMemberPhone(t *testing.T) {
 	if users != 1 {
 		t.Fatal("phone binding created a second account")
 	}
-	restorePool()
 }

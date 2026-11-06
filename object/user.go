@@ -61,13 +61,13 @@ func InitUserManager() {
 }
 
 type User struct {
-	Owner       string `xorm:"varchar(100) notnull pk unique(subject)" json:"owner"`
+	Owner       string `xorm:"varchar(100) notnull pk" json:"owner"`
 	Name        string `xorm:"varchar(255) notnull pk" json:"name"`
 	CreatedTime string `xorm:"varchar(100) index" json:"createdTime"`
 	UpdatedTime string `xorm:"varchar(100)" json:"updatedTime"`
 	DeletedTime string `xorm:"varchar(100)" json:"deletedTime"`
 
-	Id                   string     `xorm:"varbinary(255) index unique(subject)" json:"id"`
+	Id                   string     `xorm:"varchar(100) index" json:"id"`
 	ExternalId           string     `xorm:"varchar(100) index" json:"externalId"`
 	Type                 string     `xorm:"varchar(100)" json:"type"`
 	Password             string     `xorm:"varchar(150)" json:"password"`
@@ -517,6 +517,23 @@ func getUserById(owner string, id string) (*User, error) {
 	}
 }
 
+func getUserByWechatId(owner string, wechatOpenId string, wechatUnionId string) (*User, error) {
+	if wechatUnionId == "" {
+		wechatUnionId = wechatOpenId
+	}
+	user := &User{}
+	existed, err := ormer.Engine.Where("owner = ?", owner).Where("wechat = ? OR wechat = ?", wechatOpenId, wechatUnionId).Get(user)
+	if err != nil {
+		return nil, err
+	}
+
+	if existed {
+		return user, nil
+	} else {
+		return nil, nil
+	}
+}
+
 func GetUserByEmail(owner string, email string) (*User, error) {
 	if owner == "" || email == "" {
 		return nil, nil
@@ -641,12 +658,8 @@ func GetUserByUserId(owner string, userId string) (*User, error) {
 		return nil, nil
 	}
 
-	user := User{}
-	idColumn := "id"
-	if ormer.driverName == "mysql" {
-		idColumn = "BINARY id"
-	}
-	existed, err := ormer.Engine.Where("owner = ? AND "+idColumn+" = ?", owner, userId).Get(&user)
+	user := User{Owner: owner, Id: userId}
+	existed, err := ormer.Engine.Get(&user)
 	if err != nil {
 		return nil, err
 	}
@@ -931,9 +944,6 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 	if oldUser == nil {
 		return false, fmt.Errorf("the user: %s is not found", id)
 	}
-	if user.Id != "" && user.Id != oldUser.Id {
-		return false, ErrUserSubjectImmutable
-	}
 
 	// Auto-upgrade guest users when they update their username or password
 	if oldUser.Tag == "guest-user" {
@@ -987,6 +997,9 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 		columns = GetDefaultUserUpdateColumns(isAdmin)
 	}
 
+	columns = append(columns, "updated_time")
+	user.UpdatedTime = util.GetCurrentTime()
+
 	if len(user.DeletedTime) > 0 {
 		columns = append(columns, "deleted_time")
 	}
@@ -1019,29 +1032,22 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 }
 
 func updateUser(id string, user *User, columns []string) (int64, error) {
-	session := ormer.Engine.NewSession()
-	defer session.Close()
-	return updateUserInSession(session, id, user, columns)
-}
-
-func updateUserInSession(session *xorm.Session, id string, user *User, columns []string) (int64, error) {
 	owner, name := util.GetOwnerAndNameFromIdNoCheck(id)
-	user.UpdatedTime = util.GetCurrentTime()
-	err := user.updateUserHash(session)
+	err := user.UpdateUserHash()
 	if err != nil {
 		return 0, err
 	}
 
-	session = session.ID(core.PK{owner, name})
-	if len(columns) == 0 {
-		return session.AllCols().Update(user)
+	// Ensure hash column is included in updates when columns are specified
+	if len(columns) > 0 && !util.InSlice(columns, "hash") {
+		columns = append(columns, "hash")
 	}
-	for _, column := range []string{"hash", "updated_time"} {
-		if !util.InSlice(columns, column) {
-			columns = append(columns, column)
-		}
+
+	affected, err := ormer.Engine.ID(core.PK{owner, name}).Cols(columns...).Update(user)
+	if err != nil {
+		return 0, err
 	}
-	return session.Cols(columns...).Update(user)
+	return affected, nil
 }
 
 func UpdateUserForAllFields(id string, user *User) (bool, error) {
@@ -1058,15 +1064,17 @@ func UpdateUserForAllFields(id string, user *User) (bool, error) {
 	if oldUser == nil {
 		return false, fmt.Errorf("the user: %s is not found", id)
 	}
-	if user.Id != oldUser.Id {
-		return false, ErrUserSubjectImmutable
-	}
 
 	if name != user.Name {
 		err := userChangeTrigger(owner, name, user.Name)
 		if err != nil {
 			return false, err
 		}
+	}
+
+	err = user.UpdateUserHash()
+	if err != nil {
+		return false, err
 	}
 
 	if user.Avatar != oldUser.Avatar && user.Avatar != "" {
@@ -1076,6 +1084,8 @@ func UpdateUserForAllFields(id string, user *User) (bool, error) {
 		}
 	}
 
+	user.UpdatedTime = util.GetCurrentTime()
+
 	if len(user.Groups) > 0 {
 		_, err = userEnforcer.UpdateGroupsForUser(user.GetId(), user.Groups)
 		if err != nil {
@@ -1083,7 +1093,7 @@ func UpdateUserForAllFields(id string, user *User) (bool, error) {
 		}
 	}
 
-	affected, err := updateUser(id, user, nil)
+	affected, err := ormer.Engine.ID(core.PK{owner, name}).AllCols().Update(user)
 	if err != nil {
 		return false, err
 	}
@@ -1119,9 +1129,6 @@ func AddUser(user *User, lang string) (bool, error) {
 
 	if user.Owner == "" || user.Name == "" {
 		return false, errors.New(i18n.Translate(lang, "user:the user's owner and name should not be empty"))
-	}
-	if err := validateUserSubject(user.Id); err != nil {
-		return false, err
 	}
 
 	user.Groups = getOrganizationGroups(user.Owner, user.Groups)
@@ -1237,9 +1244,6 @@ func AddUsers(users []*User) (bool, error) {
 
 	// organization := GetOrganizationByUser(users[0])
 	for _, user := range users {
-		if err := validateUserSubject(user.Id); err != nil {
-			return false, err
-		}
 		// this function is only used for syncer or batch upload, so no need to encrypt the password
 		// user.UpdateUserPassword(organization)
 
@@ -1278,7 +1282,9 @@ func AddUsers(users []*User) (bool, error) {
 
 	affected, err := ormer.Engine.Insert(users)
 	if err != nil {
-		return false, err
+		if !strings.Contains(err.Error(), "Duplicate entry") {
+			return false, err
+		}
 	}
 
 	return affected != 0, nil
