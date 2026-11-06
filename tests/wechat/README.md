@@ -1,6 +1,6 @@
 # 微信登录与手机号绑定
 
-扩展基于官方 Casdoor v4.26.0，仅支持同一组织内的小程序、公众号按可信 UnionID 登录同一账号，以及小程序授权手机号绑定。用户表、通用用户 API、无 UnionID 的 OpenID 查找和持久化沿用原版。UnionID 仅查询原生微信字段及已有 `properties.wechatUnionId`；小程序保留原生 OpenID 存储。无 UnionID 时不增加 AppID 前缀或别名规则，曾返回 UnionID 不影响后续 OpenID 登录。
+扩展基于官方 Casdoor v4.26.0，仅支持同一组织内的小程序、公众号按可信 UnionID 登录同一账号，以及小程序授权手机号绑定。用户表沿用原版，通用用户 API 保持原生语义，无 UnionID 的 OpenID 查找和持久化沿用原版。UnionID 仅查询原生微信字段及已有 `properties.wechatUnionId`；小程序保留原生 OpenID 存储。无 UnionID 时不增加 AppID 前缀或别名规则，曾返回 UnionID 不影响后续 OpenID 登录。
 
 公众号扫码回调通过该公众号凭据查询微信用户信息；需有 `cgi-bin/user/info` 权限并与小程序绑定同一微信开放平台。微信返回 UnionID 时使用它，未返回时保留原生 OpenID。查询失败或返回不匹配的 OpenID 时拒绝本次回调。
 
