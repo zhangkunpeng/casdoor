@@ -11,7 +11,7 @@ func ResolveWechatOfficialAccountIdentity(client *http.Client, appId, secret, op
 	if appId == "" || secret == "" || openId == "" {
 		return nil, fmt.Errorf("missing official account identity parameters")
 	}
-	token, message, err := GetWechatOfficialAccountAccessToken(appId, secret)
+	token, message, err := getWechatOfficialAccountAccessToken(client, appId, secret)
 	if err != nil {
 		return nil, fmt.Errorf("get official account access token: %w", err)
 	}

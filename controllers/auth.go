@@ -1170,7 +1170,8 @@ func (c *ApiController) Login() {
 			} else if provider.Category == "OAuth" || object.IsFlexibleCustomProvider(provider.Type) {
 				if wechatUnionId != "" {
 					user, err = object.GetUserByWechatUnionId(application.Organization, wechatUnionId)
-				} else {
+				}
+				if err == nil && (wechatUnionId == "" || user == nil) {
 					user, err = getUserByProvider(application.Organization, provider, userInfo.Id)
 				}
 				if err != nil {
@@ -1336,7 +1337,8 @@ func (c *ApiController) Login() {
 
 					var affected bool
 					if wechatUnionId != "" {
-						user.WeChat = wechatUnionId
+						user.WeChat = userInfo.Id
+						user.Properties[object.UserPropertiesWechatUnionId] = wechatUnionId
 					}
 					affected, err = object.AddUser(user, c.GetAcceptLanguage())
 					if err != nil {
@@ -1760,19 +1762,14 @@ func (c *ApiController) HandleOfficialAccountEvent() {
 		return
 	}
 
-	wechatId := data.FromUserName
-	if identity.Unionid != "" {
-		wechatId = identity.Unionid
-	}
-
 	idp.Lock.Lock()
 	if idp.WechatCacheMap == nil {
 		idp.WechatCacheMap = make(map[string]idp.WechatCacheMapValue)
 	}
 	idp.WechatCacheMap[data.Ticket] = idp.WechatCacheMapValue{
 		IsScanned:     true,
-		WechatUnionId: wechatId,
-		HasUnionId:    identity.Unionid != "",
+		WechatOpenId:  identity.Openid,
+		WechatUnionId: identity.Unionid,
 		ProviderName:  provider.Name,
 	}
 	idp.Lock.Unlock()

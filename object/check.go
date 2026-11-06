@@ -27,6 +27,7 @@ import (
 	"github.com/casdoor/casdoor/i18n"
 	"github.com/casdoor/casdoor/util"
 	goldap "github.com/go-ldap/ldap/v3"
+	"github.com/xorm-io/xorm"
 )
 
 const (
@@ -939,23 +940,10 @@ func CheckUpdateUser(oldUser, user *User, lang string) string {
 			return i18n.Translate(lang, "check:Email already exists")
 		}
 	}
-	if oldUser.Phone != user.Phone || oldUser.CountryCode != user.CountryCode {
-		if user.Phone != "" {
-			normalizedPhone, normalizedCountryCode, ok := util.GetNormalizedPhone(user.Phone, user.GetCountryCode(""))
-			if !ok {
-				return i18n.Translate(lang, "check:Phone number is invalid")
-			}
-
-			user.Phone = normalizedPhone
-			user.CountryCode = normalizedCountryCode
-		}
-
-		// The normalization may have turned the new phone number into the old one
-		if oldUser.Phone != user.Phone || oldUser.CountryCode != user.CountryCode {
-			if HasUserByPhoneAndCountryCode(user.Owner, user.Phone, user.CountryCode) {
-				return i18n.Translate(lang, "check:Phone already exists")
-			}
-		}
+	if msg, err := checkUserPhone(oldUser, user, lang, ormer.Engine); err != nil {
+		return err.Error()
+	} else if msg != "" {
+		return msg
 	}
 	if oldUser.IpWhitelist != user.IpWhitelist {
 		if err := CheckIpWhitelist(user.IpWhitelist, lang); err != nil {
@@ -967,6 +955,30 @@ func CheckUpdateUser(oldUser, user *User, lang string) string {
 	}
 
 	return ""
+}
+
+func checkUserPhone(oldUser, user *User, lang string, query xorm.Interface) (string, error) {
+	if oldUser.Phone == user.Phone && oldUser.CountryCode == user.CountryCode {
+		return "", nil
+	}
+	if user.Phone != "" {
+		phone, country, ok := util.GetNormalizedPhone(user.Phone, user.GetCountryCode(""))
+		if !ok {
+			return i18n.Translate(lang, "check:Phone number is invalid"), nil
+		}
+		user.Phone, user.CountryCode = phone, country
+	}
+	if oldUser.Phone == user.Phone && oldUser.CountryCode == user.CountryCode {
+		return "", nil
+	}
+	existing, err := getUserByPhoneAndCountryCode(query, user.Owner, user.Phone, user.CountryCode)
+	if err != nil {
+		return "", err
+	}
+	if existing != nil {
+		return i18n.Translate(lang, "check:Phone already exists"), nil
+	}
+	return "", nil
 }
 
 // checkUserGroups keeps a user out of the groups of other organizations: a group grants the

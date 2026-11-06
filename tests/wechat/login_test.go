@@ -84,9 +84,9 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-subscribe", "different-union-case", "official-openid-only", "mini-openid-only"} {
+	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-subscribe", "different-union-case", "official-openid-only", "mini-openid-only", "official-union-upgrade"} {
 		t.Run(scenario, func(t *testing.T) {
-			officialUnion.Store(scenario != "official-openid-only")
+			officialUnion.Store(scenario != "official-openid-only" && scenario != "official-union-upgrade")
 			owner := fmt.Sprintf("wx-%s-%d", scenario, time.Now().UnixNano())
 			org := &object.Organization{Owner: "admin", Name: owner, PasswordType: "bcrypt", DefaultTokenFormat: "JWT"}
 			if _, err := object.AddOrganization(org); err != nil {
@@ -178,6 +178,15 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			var first, second string
 			var firstErr, secondErr error
 			switch scenario {
+			case "official-union-upgrade":
+				first, firstErr = officialLogin()
+				officialUnion.Store(true)
+				second, secondErr = officialLogin()
+				officialUnion.Store(false)
+				withoutUnion, loginErr := officialLogin()
+				if loginErr != nil || withoutUnion != first {
+					t.Fatalf("official OpenID login changed after UnionID promotion: %v", loginErr)
+				}
 			case "different-union-case":
 				first, firstErr = officialLogin()
 				miniCode = "case-distinct"
@@ -204,6 +213,11 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			case "official-first":
 				first, firstErr = officialLogin()
 				second, secondErr = miniLogin()
+				miniCode = "no-union"
+				withoutUnion, loginErr := miniLogin()
+				if loginErr != nil || withoutUnion != first {
+					t.Fatalf("native mini OpenID login changed after official-first login: %v", loginErr)
+				}
 			default:
 				var wg sync.WaitGroup
 				wg.Add(2)
@@ -249,10 +263,13 @@ func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
 			if user == nil || user.Id != first {
 				t.Fatal("persisted identity differs from token")
 			}
-			if scenario == "mini-first" || scenario == "union-upgrade" {
+			if scenario == "mini-first" || scenario == "union-upgrade" || scenario == "official-first" {
 				if user.WeChat != "mini-open" || user.Properties[object.UserPropertiesWechatUnionId] != "same-real-union" {
 					t.Fatal("UnionID matching changed native mini-program OpenID storage")
 				}
+			}
+			if scenario == "official-union-upgrade" && user.WeChat != "official-open" {
+				t.Fatal("UnionID promotion changed the native official OpenID")
 			}
 		})
 	}

@@ -10,7 +10,12 @@ func TestOfficialAccountTicketUsesNativeIdentifier(t *testing.T) {
 		t.Run(identity, func(t *testing.T) {
 			Lock.Lock()
 			WechatCacheMap = map[string]WechatCacheMapValue{
-				"ticket": {IsScanned: true, WechatUnionId: identity, HasUnionId: identity == "real-union", ProviderName: "official"},
+				"ticket": {IsScanned: true, WechatOpenId: "raw-official-open", ProviderName: "official"},
+			}
+			if identity == "real-union" {
+				value := WechatCacheMap["ticket"]
+				value.WechatUnionId = identity
+				WechatCacheMap["ticket"] = value
 			}
 			Lock.Unlock()
 			t.Cleanup(func() { Lock.Lock(); WechatCacheMap = nil; Lock.Unlock() })
@@ -19,7 +24,7 @@ func TestOfficialAccountTicketUsesNativeIdentifier(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if user.Id != identity || user.Username != "wx_user_"+identity || user.Extra != nil {
+			if user.Id != "raw-official-open" || user.Username != "wx_user_raw-official-open" || user.Extra != nil {
 				t.Fatalf("native ticket identity changed: %#v", user)
 			}
 			if (user.UnionId != "") != (identity == "real-union") {

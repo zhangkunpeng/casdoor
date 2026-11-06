@@ -798,12 +798,15 @@ func GetWechatMiniProgramToken(application *Application, code string, phoneCode 
 		return nil, tokenError, nil
 	}
 
-	if unionId != "" && user.Properties[UserPropertiesWechatUnionId] != unionId {
+	if unionId != "" && (user.WeChat != openId || user.Properties[UserPropertiesWechatUnionId] != unionId ||
+		user.Properties[UserPropertiesWechatOpenId] != openId) {
 		if user.Properties == nil {
 			user.Properties = map[string]string{}
 		}
 		user.Properties[UserPropertiesWechatUnionId] = unionId
-		if _, err = UpdateUser(user.GetId(), user, []string{"properties"}, false); err != nil {
+		user.Properties[UserPropertiesWechatOpenId] = openId
+		user.WeChat = openId
+		if _, err = UpdateUser(user.GetId(), user, []string{"wechat", "properties"}, false); err != nil {
 			return nil, nil, err
 		}
 	}

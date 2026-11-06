@@ -5,11 +5,56 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 type officialAccountTransport struct {
 	base   http.RoundTripper
 	target string
+}
+
+func TestResolveWechatOfficialAccountIdentityTimeout(t *testing.T) {
+	for _, path := range []string{"/cgi-bin/token", "/cgi-bin/user/info"} {
+		t.Run(path, func(t *testing.T) {
+			gate := make(chan struct{})
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == path {
+					select {
+					case <-r.Context().Done():
+						return
+					case <-gate:
+					}
+				}
+				if r.URL.Path == "/cgi-bin/token" {
+					fmt.Fprint(w, `{"access_token":"test-token"}`)
+				} else {
+					fmt.Fprint(w, `{"openid":"official-open"}`)
+				}
+			}))
+			defer server.Close()
+			base := http.DefaultTransport
+			transport := officialAccountTransport{base, server.URL}
+			http.DefaultTransport = transport
+			t.Cleanup(func() { http.DefaultTransport = base })
+			done := make(chan error, 1)
+			go func() {
+				_, err := ResolveWechatOfficialAccountIdentity(&http.Client{Transport: transport, Timeout: 30 * time.Millisecond},
+					"official-app", "test-secret", "official-open")
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				close(gate)
+				if err == nil {
+					t.Fatal("slow WeChat request succeeded")
+				}
+			case <-time.After(time.Second):
+				close(gate)
+				<-done
+				t.Fatal("WeChat request ignored the supplied client timeout")
+			}
+		})
+	}
 }
 
 func (r officialAccountTransport) RoundTrip(req *http.Request) (*http.Response, error) {

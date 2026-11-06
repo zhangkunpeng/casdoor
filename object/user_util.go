@@ -30,6 +30,7 @@ import (
 	"github.com/go-webauthn/webauthn/webauthn"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/xorm-io/core"
+	"github.com/xorm-io/xorm"
 	"golang.org/x/oauth2"
 )
 
@@ -86,12 +87,16 @@ func HasUserByField(organizationName string, field string, value string) bool {
 }
 
 func GetUserByPhoneAndCountryCode(organizationName string, phone string, countryCode string) (*User, error) {
+	return getUserByPhoneAndCountryCode(ormer.Engine, organizationName, phone, countryCode)
+}
+
+func getUserByPhoneAndCountryCode(query xorm.Interface, organizationName string, phone string, countryCode string) (*User, error) {
 	if phone == "" {
 		return nil, nil
 	}
 
 	user := User{Owner: organizationName, Phone: phone, CountryCode: countryCode}
-	existed, err := ormer.Engine.Get(&user)
+	existed, err := query.Get(&user)
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +395,9 @@ func SetUserOAuthProperties(organization *Organization, user *User, providerType
 	if userInfo.UnionId != "" {
 		propertyName := fmt.Sprintf("oauth_%s_unionId", providerType)
 		setUserProperty(user, propertyName, userInfo.UnionId)
+		if providerType == "WeChat" {
+			setUserProperty(user, UserPropertiesWechatUnionId, userInfo.UnionId)
+		}
 	}
 
 	if userInfo.AvatarUrl != "" {
