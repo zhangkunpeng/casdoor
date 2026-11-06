@@ -1,0 +1,228 @@
+package wechat_test
+
+import (
+	"bytes"
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/beego/beego/v2/server/web"
+	"github.com/casdoor/casdoor/controllers"
+
+	"github.com/casdoor/casdoor/object"
+	"github.com/casdoor/casdoor/proxy"
+	"github.com/golang-jwt/jwt/v5"
+)
+
+type wechatTransport struct {
+	base          http.RoundTripper
+	officialUnion *atomic.Bool
+}
+
+func (r wechatTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host != "api.weixin.qq.com" {
+		return r.base.RoundTrip(req)
+	}
+	var body string
+	switch req.URL.Path {
+	case "/sns/jscode2session":
+		body = `{"openid":"mini-open","unionid":"same-real-union","session_key":"test-only"}`
+		if req.URL.Query().Get("js_code") == "different-wechat" {
+			body = `{"openid":"different-open","unionid":"different-union","session_key":"test-only"}`
+		}
+		if req.URL.Query().Get("js_code") == "conflict-union" {
+			body = `{"openid":"mini-open","unionid":"different-union","session_key":"test-only"}`
+		}
+		if req.URL.Query().Get("js_code") == "no-union" {
+			body = `{"openid":"mini-open","session_key":"test-only"}`
+		}
+	case "/cgi-bin/stable_token":
+		body = `{"access_token":"test-only","expires_in":7200}`
+	case "/cgi-bin/user/info":
+		body = `{"openid":"official-open","unionid":"same-real-union"}`
+		if !r.officialUnion.Load() {
+			body = `{"openid":"official-open"}`
+		}
+	default:
+		return nil, fmt.Errorf("unexpected WeChat request %s", req.URL.Path)
+	}
+	return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: req}, nil
+}
+
+func TestWechatRegistrationOrdersAndConcurrency(t *testing.T) {
+	if os.Getenv("CASDOOR_WECHAT_TEST_DSN") == "" {
+		t.Skip("requires isolated MySQL CASDOOR_WECHAT_TEST_DSN")
+	}
+	initializeProbe(t, true)
+	baseTransport := http.DefaultTransport
+	officialUnion := &atomic.Bool{}
+	officialUnion.Store(true)
+	http.DefaultTransport = wechatTransport{baseTransport, officialUnion}
+	t.Cleanup(func() { http.DefaultTransport = baseTransport })
+	proxy.InitHttpClient()
+	web.Router("/api/login", &controllers.ApiController{}, "POST:Login")
+	web.Router("/api/webhook", &controllers.ApiController{}, "POST:HandleOfficialAccountEvent")
+	server := httptest.NewServer(web.BeeApp.Handlers)
+	defer server.Close()
+	cert, err := object.GetCert("admin/cert-built-in")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := jwt.ParseRSAPublicKeyFromPEM([]byte(cert.Certificate))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []string{"mini-first", "official-first", "concurrent", "union-upgrade", "official-openid-only", "union-conflict"} {
+		t.Run(scenario, func(t *testing.T) {
+			officialUnion.Store(scenario != "official-openid-only")
+			owner := fmt.Sprintf("wx-%s-%d", scenario, time.Now().UnixNano())
+			org := &object.Organization{Owner: "admin", Name: owner, PasswordType: "bcrypt", DefaultTokenFormat: "JWT"}
+			if _, err := object.AddOrganization(org); err != nil {
+				t.Fatal(err)
+			}
+			mini := &object.Provider{Owner: "admin", Name: owner + "-mini", Category: "OAuth", Type: "WeChatMiniProgram", ClientId: "mini-app", ClientSecret: "test-only"}
+			official := &object.Provider{Owner: "admin", Name: owner + "-official", Category: "OAuth", Type: "WeChat", SubType: "Web", ClientId2: "official-app", ClientSecret2: "test-only", Content: "test-webhook-token"}
+			for _, p := range []*object.Provider{mini, official} {
+				if _, err := object.AddProvider(p); err != nil {
+					t.Fatal(err)
+				}
+			}
+			app := &object.Application{Owner: "admin", Name: owner, Organization: owner, ClientId: owner + "-client", ClientSecret: "test-only", EnableSignUp: true, TokenFormat: "JWT", GrantTypes: []string{"token"}, Cert: "cert-built-in", ExpireInHours: 1, Providers: []*object.ProviderItem{{Name: mini.Name, CanSignUp: true, CanSignIn: true, Provider: mini}, {Name: official.Name, CanSignUp: true, CanSignIn: true, Provider: official}}, SignupItems: []*object.SignupItem{{Name: "ID", Rule: "Random"}}}
+			if _, err := object.AddApplication(app, "en"); err != nil {
+				t.Fatal(err)
+			}
+			app, err = object.GetApplication(app.GetId())
+			if err != nil {
+				t.Fatal(err)
+			}
+			miniCode := "new-test-code"
+			miniLogin := func() (string, error) {
+				token, te, err := object.GetWechatMiniProgramToken(app, miniCode, "", false, "127.0.0.1:8000", "", "", "en")
+				if err != nil {
+					return "", err
+				}
+				if te != nil {
+					return "", fmt.Errorf("mini token error: %s", te.ErrorDescription)
+				}
+				parsed, err := jwt.Parse(token.AccessToken, func(*jwt.Token) (interface{}, error) { return key, nil }, jwt.WithValidMethods([]string{"RS256"}), jwt.WithAudience(app.ClientId), jwt.WithIssuer("http://127.0.0.1:8000"))
+				if err != nil {
+					return "", err
+				}
+				return parsed.Claims.GetSubject()
+			}
+			officialLogin := func() (string, error) {
+				ticket := fmt.Sprintf("ticket-%s", scenario)
+				vals := []string{official.Content, "123", "nonce"}
+				sort.Strings(vals)
+				hash := sha1.Sum([]byte(strings.Join(vals, "")))
+				callback := server.URL + "/api/webhook?timestamp=123&nonce=nonce&signature=" + hex.EncodeToString(hash[:])
+				xml := fmt.Sprintf("<xml><MsgType>event</MsgType><Event>SCAN</Event><EventKey>admin/%s</EventKey><FromUserName>official-open</FromUserName><Ticket>%s</Ticket></xml>", official.Name, ticket)
+				res, err := http.Post(callback, "text/xml", strings.NewReader(xml))
+				if err != nil {
+					return "", err
+				}
+				b, _ := io.ReadAll(res.Body)
+				res.Body.Close()
+				if len(b) > 0 {
+					return "", fmt.Errorf("callback: %s", b)
+				}
+				body, _ := json.Marshal(map[string]string{"application": app.Name, "organization": owner, "provider": official.Name, "code": "wechat_oa:" + ticket, "state": "casdoor", "method": "signin", "type": "token"})
+				res, err = http.Post(server.URL+"/api/login?clientId="+url.QueryEscape(app.ClientId)+"&responseType=token", "application/json", bytes.NewReader(body))
+				if err != nil {
+					return "", err
+				}
+				defer res.Body.Close()
+				var response struct {
+					Status string
+					Msg    string
+					Data   json.RawMessage
+				}
+				if err = json.NewDecoder(res.Body).Decode(&response); err != nil {
+					return "", err
+				}
+				if response.Status != "ok" {
+					return "", fmt.Errorf("official login: %s", response.Msg)
+				}
+				var token string
+				if err = json.Unmarshal(response.Data, &token); err != nil {
+					return "", fmt.Errorf("official token response: %s", response.Data)
+				}
+				parsed, err := jwt.Parse(token, func(*jwt.Token) (interface{}, error) { return key, nil }, jwt.WithValidMethods([]string{"RS256"}), jwt.WithAudience(app.ClientId), jwt.WithIssuer("http://127.0.0.1:8000"))
+				if err != nil {
+					return "", err
+				}
+				return parsed.Claims.GetSubject()
+			}
+			var first, second string
+			var firstErr, secondErr error
+			switch scenario {
+			case "union-upgrade":
+				miniCode = "no-union"
+				first, firstErr = miniLogin()
+				miniCode = "new-test-code"
+				promoted, promoteErr := miniLogin()
+				if promoteErr != nil || promoted != first {
+					t.Fatalf("identity promotion changed subject: %v", promoteErr)
+				}
+				second, secondErr = officialLogin()
+			case "official-openid-only":
+				first, firstErr = officialLogin()
+				second, secondErr = officialLogin()
+			case "mini-first", "union-conflict":
+				first, firstErr = miniLogin()
+				second, secondErr = officialLogin()
+			case "official-first":
+				first, firstErr = officialLogin()
+				second, secondErr = miniLogin()
+			default:
+				var wg sync.WaitGroup
+				wg.Add(2)
+				go func() { defer wg.Done(); first, firstErr = miniLogin() }()
+				go func() { defer wg.Done(); second, secondErr = officialLogin() }()
+				wg.Wait()
+			}
+			if firstErr != nil || secondErr != nil {
+				t.Fatalf("login errors: %v / %v", firstErr, secondErr)
+			}
+			if first == "" || first != second {
+				t.Fatalf("different token subjects: %q / %q", first, second)
+			}
+			if scenario == "union-conflict" {
+				miniCode = "conflict-union"
+				if _, err := miniLogin(); err == nil {
+					t.Fatal("conflicting UnionID was accepted")
+				}
+			}
+			count, err := object.GetUserCount(owner, "", "", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if count != 1 {
+				t.Fatalf("users=%d, want 1", count)
+			}
+			expectedIdentity := "same-real-union"
+			if scenario == "official-openid-only" {
+				expectedIdentity = "openid:official-app:official-open"
+			}
+			user, err := object.GetUserByField(owner, "WeChat", expectedIdentity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if user == nil || user.Id != first {
+				t.Fatal("persisted identity differs from token")
+			}
+		})
+	}
+}

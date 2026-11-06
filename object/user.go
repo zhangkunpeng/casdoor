@@ -67,7 +67,7 @@ type User struct {
 	UpdatedTime string `xorm:"varchar(100)" json:"updatedTime"`
 	DeletedTime string `xorm:"varchar(100)" json:"deletedTime"`
 
-	Id                   string     `xorm:"varchar(100) index" json:"id"`
+	Id                   string     `xorm:"varchar(255) index" json:"id"`
 	ExternalId           string     `xorm:"varchar(100) index" json:"externalId"`
 	Type                 string     `xorm:"varchar(100)" json:"type"`
 	Password             string     `xorm:"varchar(150)" json:"password"`
@@ -517,23 +517,6 @@ func getUserById(owner string, id string) (*User, error) {
 	}
 }
 
-func getUserByWechatId(owner string, wechatOpenId string, wechatUnionId string) (*User, error) {
-	if wechatUnionId == "" {
-		wechatUnionId = wechatOpenId
-	}
-	user := &User{}
-	existed, err := ormer.Engine.Where("owner = ?", owner).Where("wechat = ? OR wechat = ?", wechatOpenId, wechatUnionId).Get(user)
-	if err != nil {
-		return nil, err
-	}
-
-	if existed {
-		return user, nil
-	} else {
-		return nil, nil
-	}
-}
-
 func GetUserByEmail(owner string, email string) (*User, error) {
 	if owner == "" || email == "" {
 		return nil, nil
@@ -658,8 +641,12 @@ func GetUserByUserId(owner string, userId string) (*User, error) {
 		return nil, nil
 	}
 
-	user := User{Owner: owner, Id: userId}
-	existed, err := ormer.Engine.Get(&user)
+	user := User{}
+	idColumn := "id"
+	if ormer.driverName == "mysql" {
+		idColumn = "BINARY id"
+	}
+	existed, err := ormer.Engine.Where("owner = ? AND "+idColumn+" = ?", owner, userId).Get(&user)
 	if err != nil {
 		return nil, err
 	}
@@ -944,6 +931,9 @@ func UpdateUser(id string, user *User, columns []string, isAdmin bool) (bool, er
 	if oldUser == nil {
 		return false, fmt.Errorf("the user: %s is not found", id)
 	}
+	if user.Id != "" && user.Id != oldUser.Id {
+		return false, ErrUserSubjectImmutable
+	}
 
 	// Auto-upgrade guest users when they update their username or password
 	if oldUser.Tag == "guest-user" {
@@ -1063,6 +1053,9 @@ func UpdateUserForAllFields(id string, user *User) (bool, error) {
 
 	if oldUser == nil {
 		return false, fmt.Errorf("the user: %s is not found", id)
+	}
+	if user.Id != oldUser.Id {
+		return false, ErrUserSubjectImmutable
 	}
 
 	if name != user.Name {
@@ -1227,7 +1220,7 @@ func AddUser(user *User, lang string) (bool, error) {
 		user.Name = strings.ToLower(user.Name)
 	}
 
-	affected, err := ormer.Engine.Insert(user)
+	affected, err := insertSubjectUsers([]*User{user})
 	if err != nil {
 		return false, err
 	}
@@ -1280,11 +1273,9 @@ func AddUsers(users []*User) (bool, error) {
 		}
 	}
 
-	affected, err := ormer.Engine.Insert(users)
+	affected, err := insertSubjectUsers(users)
 	if err != nil {
-		if !strings.Contains(err.Error(), "Duplicate entry") {
-			return false, err
-		}
+		return false, err
 	}
 
 	return affected != 0, nil
@@ -1318,7 +1309,7 @@ func AddUsersInBatch(users []*User) (bool, error) {
 }
 
 func deleteUser(user *User) (bool, error) {
-	affected, err := ormer.Engine.ID(core.PK{user.Owner, user.Name}).Delete(&User{})
+	affected, err := deleteSubjectUser(user)
 	if err != nil {
 		return false, err
 	}
