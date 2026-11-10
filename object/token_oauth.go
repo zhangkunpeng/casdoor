@@ -425,6 +425,30 @@ func getApplicationToken(application *Application, scope string, host string, gr
 		Type:  "application",
 	}
 
+	if grantType == "client_credentials" && !application.IsShared && application.TokenFormat == "JWT-Custom" && util.InSlice(application.TokenFields, "Permissions") {
+		// A machine subject receives direct grants from its own organization.
+		// Resolving it as a user could inherit grants from a same-named account.
+		permissions, err := getPermissionsByUser(nullUser.Id)
+		if err != nil {
+			return nil, nil, err
+		}
+		for _, permission := range permissions {
+			if permission.Owner != application.Organization || !permission.IsEnabled || permission.State != "Approved" {
+				continue
+			}
+			nullUser.Permissions = append(nullUser.Permissions, &Permission{
+				Owner:        permission.Owner,
+				Name:         permission.Name,
+				ResourceType: permission.ResourceType,
+				Resources:    permission.Resources,
+				Actions:      permission.Actions,
+				Effect:       permission.Effect,
+				IsEnabled:    permission.IsEnabled,
+				ExpireTime:   permission.ExpireTime,
+			})
+		}
+	}
+
 	accessToken, _, _, tokenName, err := generateJwtToken(application, nullUser, "", "", "", scope, "", host)
 	if err != nil {
 		return nil, &TokenError{
