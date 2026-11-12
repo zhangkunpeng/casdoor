@@ -101,6 +101,12 @@ func serveProviderHintRedirectPage(ctx *context.Context) bool {
 		return false
 	}
 
+	// The static provider redirect cannot obtain an Official Account scan ticket.
+	// Let the existing React login page own that interactive QR flow.
+	if ctx.Input.Query("__casdoor_provider_hint_react") == "1" {
+		return false
+	}
+
 	providerHint := ctx.Input.Query("provider_hint")
 	if providerHint == "" {
 		return false

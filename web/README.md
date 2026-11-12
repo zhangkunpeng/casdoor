@@ -152,7 +152,12 @@ cannot finish it stores what it already got under
 rather than spending the single-use code again, and ignores a payload whose
 `search` does not match this callback. `?provider_hint=<name>` likewise jumps
 straight to that provider, which is what happens when the static redirect page
-is unavailable or hands the request back.
+is unavailable or hands the request back. Desktop Official Account QR providers hand
+back with `__casdoor_provider_hint_react=1`, preserving `provider_hint` and the
+original OAuth/PKCE parameters. The existing React QR dialog waits for the scan
+ticket; the static redirect never constructs a `wechat_oa:` callback without one.
+Run `node --test tests/provider_hint_redirect.test.cjs` from the repository root
+and `go test ./routers -run TestProviderHintReactHandoff` for the handoff regressions.
 
 The application edit page keeps the antd page's own shape: the same eight tabs
 (Basic, Authentication, OIDC/OAuth, SAML, Providers, UI Customization, Security,
