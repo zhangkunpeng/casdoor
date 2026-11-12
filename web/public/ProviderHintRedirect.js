@@ -192,7 +192,7 @@
     return state;
   }
 
-  async function getAuthUrl(application, provider, method, code) {
+  async function getAuthUrl(application, provider, method) {
     if (!application || !provider) {
       return "";
     }
@@ -252,10 +252,6 @@
     } else if (provider.type === "WeChat") {
       if (navigator.userAgent.indexOf("MicroMessenger") !== -1) {
         return authInfo[provider.type].mpEndpoint + "?appid=" + provider.clientId2 + "&redirect_uri=" + redirectUri + "&state=" + state + "&scope=" + authInfo[provider.type].mpScope + "&response_type=code#wechat_redirect";
-      }
-
-      if (provider.clientId2 && provider.disableSsl && provider.signName === "media") {
-        return redirectOrigin + "/callback?state=" + state + "&code=wechat_oa:" + code;
       }
 
       return endpoint + "?appid=" + provider.clientId + "&redirect_uri=" + redirectUri + "&scope=" + scope + "&response_type=code&state=" + state + "#wechat_redirect";
@@ -404,7 +400,18 @@
       return;
     }
 
-    var authUrl = await getAuthUrl(application, providerItem.provider, "signup");
+    var provider = providerItem.provider;
+    if (provider.type === "WeChat" && navigator.userAgent.indexOf("MicroMessenger") === -1 &&
+        provider.clientId2 && provider.disableSsl && provider.signName === "media") {
+      // The media-account flow needs a scan ticket. Reuse the existing QR UI
+      // instead of constructing a callback before the user has scanned.
+      var reactUrl = new URL(window.location.href);
+      reactUrl.searchParams.set("__casdoor_provider_hint_react", "1");
+      window.location.replace(reactUrl.pathname + reactUrl.search + reactUrl.hash);
+      return;
+    }
+
+    var authUrl = await getAuthUrl(application, provider, "signup");
     if (!authUrl) {
       redirectToFallback();
       return;
